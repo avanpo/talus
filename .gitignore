@@ -1,0 +1,26 @@
+# Binaries
+talus
+*.exe
+*.test
+
+# Credentials & local configuration (CRITICAL: NEVER COMMIT)
+.talus-config.json
+*.env
+
+# Local data & backups
+activities/
+data/
+metadata.json
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Generated artifacts & charts
+*.svg
+
+# Editor & tooling
+.aider*
+.DS_Store
+.idea/
+.vscode/
