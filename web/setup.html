@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connect with Strava - talus</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛰️</text></svg>">
+    <style>
+        :root {
+            --bg-body: #f8fafc;
+            --bg-card: #ffffff;
+            --border: #e2e8f0;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --text-dim: #94a3b8;
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --emerald: #16a34a;
+            --amber: #d97706;
+            --rose: #e11d48;
+            --shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.04);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-body);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+        }
+
+        .setup-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            max-width: 520px;
+            width: 100%;
+            padding: 2.25rem;
+            box-shadow: var(--shadow);
+        }
+
+        .brand-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1.25rem;
+        }
+
+        .brand-icon { font-size: 2.2rem; }
+        .brand-title {
+            font-size: 1.6rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            color: var(--text-main);
+        }
+        .brand-badge {
+            font-size: 0.75rem;
+            background-color: #eff6ff;
+            color: var(--primary);
+            border: 1px solid #bfdbfe;
+            padding: 0.2rem 0.5rem;
+            border-radius: 9999px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        p.desc {
+            color: var(--text-muted);
+            font-size: 0.95rem;
+            line-height: 1.5;
+            margin-bottom: 1.75rem;
+        }
+
+        .steps-box {
+            background-color: #f8fafc;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem 1.25rem;
+            margin-bottom: 1.75rem;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            line-height: 1.6;
+        }
+
+        .steps-box ol {
+            padding-left: 1.2rem;
+        }
+
+        .steps-box li {
+            margin-bottom: 0.35rem;
+        }
+
+        .steps-box a {
+            color: var(--primary);
+            text-decoration: underline;
+        }
+
+        .form-group {
+            margin-bottom: 1.25rem;
+        }
+
+        label {
+            display: block;
+            font-size: 0.82rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            margin-bottom: 0.45rem;
+        }
+
+        input[type="text"], input[type="password"] {
+            width: 100%;
+            background-color: #ffffff;
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 0.65rem 0.9rem;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            outline: none;
+            transition: border-color 0.15s;
+        }
+
+        input[type="text"]:focus, input[type="password"]:focus {
+            border-color: var(--primary);
+        }
+
+        .btn-submit {
+            width: 100%;
+            background-color: #fc5200; /* Strava signature orange */
+            color: #ffffff;
+            border: none;
+            padding: 0.8rem;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.15s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            margin-top: 1.5rem;
+        }
+
+        .btn-submit:hover {
+            opacity: 0.92;
+        }
+
+        .alert-error {
+            background-color: #fff1f2;
+            border: 1px solid #fecdd3;
+            color: #be123c;
+            padding: 0.75rem 1rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            margin-bottom: 1.25rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="setup-card">
+        <div class="brand-header">
+            <span class="brand-icon">⛰️</span>
+            <span class="brand-title">talus</span>
+            <span class="brand-badge">Setup</span>
+        </div>
+
+        <p class="desc">
+            Connect your Strava account to start backing up activity telemetry and generating your endurance analytics dashboard.
+        </p>
+
+        {{if .Error}}
+        <div class="alert-error">
+            {{.Error}}
+        </div>
+        {{end}}
+
+        <div class="steps-box">
+            <strong>Getting your API keys:</strong>
+            <ol>
+                <li>Visit <a href="https://www.strava.com/settings/api" target="_blank" rel="noopener">strava.com/settings/api</a>.</li>
+                <li>Set <strong>Authorization Callback Domain</strong> to <code>localhost</code> (or your server's host).</li>
+                <li>Copy your <strong>Client ID</strong> and <strong>Client Secret</strong> below.</li>
+            </ol>
+        </div>
+
+        <form action="/setup/auth" method="POST">
+            <div class="form-group">
+                <label for="client_id">Client ID</label>
+                <input type="text" id="client_id" name="client_id" value="{{.ClientID}}" required placeholder="e.g. 123456" autofocus>
+            </div>
+
+            <div class="form-group">
+                <label for="client_secret">Client Secret</label>
+                <input type="password" id="client_secret" name="client_secret" value="{{.ClientSecret}}" required placeholder="e.g. a1b2c3d4e5f6...">
+            </div>
+
+            <button type="submit" class="btn-submit">
+                <span>Connect with Strava &rarr;</span>
+            </button>
+        </form>
+    </div>
+</body>
+</html>

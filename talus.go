@@ -54,20 +54,16 @@ func parseDurationCustom(s string) (time.Duration, error) {
 	if strings.HasSuffix(s, "w") {
 		weeks, err := strconv.Atoi(strings.TrimSuffix(s, "w"))
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("invalid weeks format %q: %w", s, err)
 		}
 		return time.Duration(weeks) * 7 * 24 * time.Hour, nil
 	}
-	// Try standard time.ParseDuration (e.g. "720h")
-	d, err := time.ParseDuration(s)
-	if err == nil {
-		return d, nil
-	}
-	return 0, fmt.Errorf("unknown duration format %q (examples: '30d', '12w', '720h')", s)
+	return time.ParseDuration(s)
 }
 
 func parseIDs(s string) ([]int64, error) {
-	if strings.TrimSpace(s) == "" {
+	s = strings.TrimSpace(s)
+	if s == "" {
 		return nil, nil
 	}
 	parts := strings.Split(s, ",")
@@ -88,43 +84,15 @@ func parseIDs(s string) ([]int64, error) {
 
 func main() {
 	if len(os.Args) < 2 {
-		printUsageAndExit()
+		runServe(nil)
+		return
 	}
 
 	subcommand := os.Args[1]
 
 	switch subcommand {
-	case "init":
-		initCmd := flag.NewFlagSet("init", flag.ExitOnError)
-		clientID := initCmd.String("client-id", "", "Strava API Client ID (required)")
-		clientSecret := initCmd.String("client-secret", "", "Strava API Client Secret (required)")
-		noLocalhost := initCmd.Bool("no-localhost", false, "Disable temporary local redirect server and use manual copy-paste fallback")
-
-		flagsWithArgs := map[string]bool{
-			"client-id": true, "client-secret": true,
-		}
-		_ = initCmd.Parse(reorderArgs(flagsWithArgs, os.Args[2:]))
-
-		args := initCmd.Args()
-		if len(args) < 1 {
-			fmt.Println("Error: Missing backup directory path.")
-			fmt.Println("Usage: talus init <backup_dir> --client-id <id> --client-secret <secret>")
-			os.Exit(1)
-		}
-		backupDir := args[0]
-
-		if *clientID == "" || *clientSecret == "" {
-			fmt.Println("Error: Both --client-id and --client-secret are required.")
-			fmt.Println("Usage: talus init <backup_dir> --client-id <id> --client-secret <secret>")
-			os.Exit(1)
-		}
-
-		fmt.Printf("Initializing backup directory at %s...\n", backupDir)
-		err := RunOAuthFlow(backupDir, *clientID, *clientSecret, !*noLocalhost)
-		if err != nil {
-			fmt.Printf("Error running initialization: %v\n", err)
-			os.Exit(1)
-		}
+	case "help", "-h", "--help":
+		printUsageAndExit()
 
 	case "sync":
 		syncCmd := flag.NewFlagSet("sync", flag.ExitOnError)
@@ -132,19 +100,31 @@ func main() {
 		checkUpdates := syncCmd.Bool("check-updates", false, "Scan summaries to detect and redownload edited activities (title, distance, sport type, gear)")
 		recent := syncCmd.String("recent", "", "Look back and refresh activities within duration (e.g. '30d', '12w', '180d')")
 		refresh := syncCmd.String("refresh", "", "Comma-separated list of specific activity IDs to force re-download")
+		clientID := syncCmd.String("client-id", "", "Strava API Client ID (if not authorized yet)")
+		clientSecret := syncCmd.String("client-secret", "", "Strava API Client Secret (if not authorized yet)")
 
 		flagsWithArgs := map[string]bool{
-			"recent": true, "refresh": true,
+			"recent": true, "refresh": true, "client-id": true, "client-secret": true,
 		}
 		_ = syncCmd.Parse(reorderArgs(flagsWithArgs, os.Args[2:]))
 
 		args := syncCmd.Args()
-		if len(args) < 1 {
-			fmt.Println("Error: Missing backup directory path.")
-			fmt.Println("Usage: talus sync <backup_dir> [--force] [--check-updates] [--recent 30d] [--refresh <id1,id2>]")
-			os.Exit(1)
+		backupDir := "."
+		if len(args) >= 1 {
+			backupDir = args[0]
+		} else if envDir := os.Getenv("DATA_DIR"); envDir != "" {
+			backupDir = envDir
 		}
-		backupDir := args[0]
+
+		// Auto-initialize if not configured yet
+		if !isConfigured(backupDir) {
+			fmt.Printf("No configuration found in %s. Running one-time setup...\n", backupDir)
+			err := RunTerminalOAuthFlow(backupDir, *clientID, *clientSecret)
+			if err != nil {
+				fmt.Printf("Setup failed: %v\n", err)
+				os.Exit(1)
+			}
+		}
 
 		var recentDuration time.Duration
 		if *recent != "" {
@@ -177,148 +157,89 @@ func main() {
 		}
 		fmt.Println("Synchronization finished successfully.")
 
-	case "stats":
-		statsCmd := flag.NewFlagSet("stats", flag.ExitOnError)
-		period := statsCmd.String("period", "month", "Aggregation period: 'week', 'month', or 'year'")
-		year := statsCmd.Int("year", -1, "Filter by year (-1 = current year, 0 = all years)")
-		allYears := statsCmd.Bool("all-years", false, "Show stats across all years")
-		sportType := statsCmd.String("type", "run", "Sport type filter: 'run', 'road', 'trail', 'ride', 'hike', 'walk', or 'all'")
-		unit := statsCmd.String("unit", "km", "Distance unit: 'km' or 'mi'")
-		breakdown := statsCmd.Bool("breakdown", false, "Show road vs trail breakdown sub-rows")
-
-		flagsWithArgs := map[string]bool{
-			"period": true, "year": true, "type": true, "unit": true,
-		}
-		_ = statsCmd.Parse(reorderArgs(flagsWithArgs, os.Args[2:]))
-
-		args := statsCmd.Args()
-		if len(args) < 1 {
-			fmt.Println("Error: Missing backup directory path.")
-			fmt.Println("Usage: talus stats <backup_dir> [--period week|month|year] [--year <year>] [--all-years] [--type run|road|trail|ride|gravel|all] [--unit km|mi] [--breakdown]")
-			os.Exit(1)
-		}
-		backupDir := args[0]
-
-		effectiveYear := *year
-		if *allYears || *year == 0 {
-			effectiveYear = 0
-		} else if *year == -1 {
-			// If period is "year", default to showing all years!
-			if strings.ToLower(*period) == "year" {
-				effectiveYear = 0
-			} else {
-				effectiveYear = time.Now().Year()
-			}
-		}
-
-		opts := StatsOptions{
-			Period:      *period,
-			Year:        effectiveYear,
-			SportType:   *sportType,
-			Unit:        *unit,
-			ShowSubtype: *breakdown,
-		}
-
-		err := GenerateStatsReport(backupDir, opts)
-		if err != nil {
-			fmt.Printf("Error generating stats: %v\n", err)
-			os.Exit(1)
-		}
-
-	case "analyze":
-		analyzeCmd := flag.NewFlagSet("analyze", flag.ExitOnError)
-		_ = analyzeCmd.Parse(reorderArgs(nil, os.Args[2:]))
-
-		args := analyzeCmd.Args()
-		if len(args) < 1 {
-			fmt.Println("Error: Missing backup directory path.")
-			fmt.Println("Usage: talus analyze <backup_dir>")
-			os.Exit(1)
-		}
-		backupDir := args[0]
-
-		err := AnalyzeActivities(backupDir)
-		if err != nil {
-			fmt.Printf("Error running analysis: %v\n", err)
-			os.Exit(1)
-		}
-
-	case "hr-zones":
-		hrZonesCmd := flag.NewFlagSet("hr-zones", flag.ExitOnError)
-		year := hrZonesCmd.Int("year", time.Now().Year(), "Year to analyze")
-		zones := hrZonesCmd.String("zones", "", "Custom heart rate zones as 4 comma-separated thresholds (e.g. 120,138,152,168)")
-		out := hrZonesCmd.String("out", "", "Output path for the generated SVG file")
-
-		flagsWithArgs := map[string]bool{
-			"year": true, "zones": true, "out": true,
-		}
-		_ = hrZonesCmd.Parse(reorderArgs(flagsWithArgs, os.Args[2:]))
-
-		args := hrZonesCmd.Args()
-		if len(args) < 1 {
-			fmt.Println("Error: Missing backup directory path.")
-			fmt.Println("Usage: talus hr-zones <backup_dir> [--year <year>] [--zones <zones>] [--out <output_path>]")
-			os.Exit(1)
-		}
-		backupDir := args[0]
-
-		err := GenerateHRZonesReport(backupDir, *year, *zones, *out)
-		if err != nil {
-			fmt.Printf("Error running heart rate zones analysis: %v\n", err)
-			os.Exit(1)
-		}
-
-	case "help", "-h", "--help":
-		printUsageAndExit()
+	case "serve":
+		runServe(os.Args[2:])
 
 	default:
-		fmt.Printf("Error: Unknown command %q.\n\n", subcommand)
-		printUsageAndExit()
+		// Default to running serve with the provided arguments
+		runServe(os.Args[1:])
+	}
+}
+
+func runServe(rawArgs []string) {
+	serveCmd := flag.NewFlagSet("serve", flag.ExitOnError)
+	port := serveCmd.Int("port", 8080, "Port to listen on (or use $PORT)")
+	syncIntervalStr := serveCmd.String("sync-interval", "1h", "Interval between incremental syncs (e.g. 1h, 30m, or use $SYNC_INTERVAL)")
+	checkUpdatesIntervalStr := serveCmd.String("check-updates-interval", "24h", "Interval between update scans (e.g. 24h, 12h, or use $CHECK_UPDATES_INTERVAL)")
+	noSync := serveCmd.Bool("no-sync", false, "Disable background sync daemon")
+
+	flagsWithArgs := map[string]bool{
+		"port": true, "sync-interval": true, "check-updates-interval": true,
+	}
+	_ = serveCmd.Parse(reorderArgs(flagsWithArgs, rawArgs))
+
+	args := serveCmd.Args()
+	backupDir := ""
+	if len(args) >= 1 {
+		backupDir = args[0]
+	} else if envDir := os.Getenv("DATA_DIR"); envDir != "" {
+		backupDir = envDir
+	} else {
+		if _, err := os.Stat("/data"); err == nil {
+			backupDir = "/data"
+		} else {
+			backupDir = "."
+		}
+	}
+
+	if envPort := os.Getenv("PORT"); envPort != "" {
+		if p, err := strconv.Atoi(envPort); err == nil {
+			*port = p
+		}
+	}
+	if envSync := os.Getenv("SYNC_INTERVAL"); envSync != "" {
+		*syncIntervalStr = envSync
+	}
+	if envCheck := os.Getenv("CHECK_UPDATES_INTERVAL"); envCheck != "" {
+		*checkUpdatesIntervalStr = envCheck
+	}
+
+	syncInterval, err := parseDurationCustom(*syncIntervalStr)
+	if err != nil {
+		fmt.Printf("Error: Invalid sync interval %q: %v\n", *syncIntervalStr, err)
+		os.Exit(1)
+	}
+	checkUpdatesInterval, err := parseDurationCustom(*checkUpdatesIntervalStr)
+	if err != nil {
+		fmt.Printf("Error: Invalid check updates interval %q: %v\n", *checkUpdatesIntervalStr, err)
+		os.Exit(1)
+	}
+
+	err = StartWebServer(backupDir, *port, syncInterval, checkUpdatesInterval, *noSync)
+	if err != nil {
+		fmt.Printf("Error running server: %v\n", err)
+		os.Exit(1)
 	}
 }
 
 func printUsageAndExit() {
-	fmt.Println("talus is a local endurance telemetry and training analytics tool for trail/road running, MTB, and gravel.")
+	fmt.Println("talus: local endurance telemetry & training analytics dashboard")
 	fmt.Println()
 	fmt.Println("Usage:")
-	fmt.Println("  talus <command> <backup_dir> [flags]")
+	fmt.Println("  talus [backup_dir] [flags]       Start web dashboard & background sync daemon (default)")
+	fmt.Println("  talus sync [backup_dir] [flags]  Run a one-off headless synchronization")
 	fmt.Println()
-	fmt.Println("The commands are:")
-	fmt.Println("  init <backup_dir> --client-id <id> --client-secret <secret>")
-	fmt.Println("         Initialize a backup directory and authorize with Strava.")
-	fmt.Println("         Optional flags:")
-	fmt.Println("           --no-localhost   Disable temporary local server (useful on headless systems).")
+	fmt.Println("Server flags (talus / talus serve):")
+	fmt.Println("  --port <port>                    Port to listen on (default: 8080 or $PORT)")
+	fmt.Println("  --sync-interval <dur>            Interval for incremental syncs (default: 1h or $SYNC_INTERVAL)")
+	fmt.Println("  --check-updates-interval <dur>   Interval for edit/crop scans (default: 24h or $CHECK_UPDATES_INTERVAL)")
+	fmt.Println("  --no-sync                        Dashboard-only mode (disable background sync)")
 	fmt.Println()
-	fmt.Println("  sync <backup_dir>")
-	fmt.Println("         Synchronize (incremental backup) the authorized directory with Strava.")
-	fmt.Println("         Optional flags:")
-	fmt.Println("           --recent <dur>   Check and refresh activities within recent duration (e.g. '30d', '180d').")
-	fmt.Println("           --check-updates  Scan all activities on Strava to detect edits (titles, crops, sport type).")
-	fmt.Println("           --refresh <ids>  Comma-separated activity IDs to re-download specifically.")
-	fmt.Println("           --force          Force overwrite of all existing files.")
-	fmt.Println()
-	fmt.Println("  stats <backup_dir>")
-	fmt.Println("         Display periodic volume and fitness statistics (weekly, monthly, yearly).")
-	fmt.Println("         Optional flags:")
-	fmt.Println("           --period <p>     Aggregation period: 'week', 'month' (default), or 'year'.")
-	fmt.Println("           --year <year>    Filter to a specific year (default: current year; all years if --period year).")
-	fmt.Println("           --all-years      Show stats across all years.")
-	fmt.Println("           --type <type>    Filter sport type: 'run' (default), 'road', 'trail', 'ride', 'gravel', 'all'.")
-	fmt.Println("           --unit <unit>    Distance unit: 'km' (default) or 'mi'.")
-	fmt.Println("           --breakdown      Show road vs. trail sub-rows under each period.")
-	fmt.Println()
-	fmt.Println("  analyze <backup_dir>")
-	fmt.Println("         Analyze running/riding fitness and group activities by route GPS similarity.")
-	fmt.Println()
-	fmt.Println("  hr-zones <backup_dir>")
-	fmt.Println("         Generate an SVG chart of heart rate zone/beat distribution for a specific year.")
-	fmt.Println("         Optional flags:")
-	fmt.Println("           --year <year>    Filter activities by year (defaults to current year).")
-	fmt.Println("           --zones <z>      Optional 4 comma-separated zone thresholds (e.g. 120,138,152,168).")
-	fmt.Println("           --out <file>     Custom file path to save the generated SVG chart.")
-	fmt.Println()
-	fmt.Println("  help")
-	fmt.Println("         Print this usage message.")
+	fmt.Println("Sync flags (talus sync):")
+	fmt.Println("  --recent <dur>                   Check activities within recent duration (e.g. '30d', '180d')")
+	fmt.Println("  --check-updates                  Scan all activities to detect edits (titles, crops, gear)")
+	fmt.Println("  --refresh <id1,id2>              Force re-download of specific activity IDs")
+	fmt.Println("  --force                          Force overwrite of all existing files")
 	fmt.Println()
 	os.Exit(0)
 }

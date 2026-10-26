@@ -137,3 +137,206 @@ func TestParseDurationCustom(t *testing.T) {
 		t.Errorf("failed parsing 2w: %v, %v", w, err)
 	}
 }
+
+func TestSkiTouringVsDownhill(t *testing.T) {
+	alpine := &ActivityDetail{
+		ID:                 10,
+		SportType:          "AlpineSki",
+		Type:               "AlpineSki",
+		Distance:           25000,
+		TotalElevationGain: 4000,
+		MovingTime:         7200,
+		StartDate:          time.Date(2026, 1, 15, 9, 0, 0, 0, time.UTC),
+	}
+	snowboard := &ActivityDetail{
+		ID:                 11,
+		SportType:          "Snowboard",
+		Type:               "Snowboard",
+		Distance:           15000,
+		TotalElevationGain: 3000,
+		MovingTime:         5000,
+		StartDate:          time.Date(2026, 1, 16, 9, 0, 0, 0, time.UTC),
+	}
+	backcountry := &ActivityDetail{
+		ID:                 12,
+		SportType:          "BackcountrySki",
+		Type:               "BackcountrySki",
+		Distance:           8000,
+		TotalElevationGain: 1200,
+		MovingTime:         9000,
+		StartDate:          time.Date(2026, 1, 17, 9, 0, 0, 0, time.UTC),
+	}
+
+	if !IsDownhillSki(alpine) {
+		t.Errorf("expected AlpineSki to be recognized as downhill")
+	}
+	if !IsDownhillSki(snowboard) {
+		t.Errorf("expected Snowboard to be recognized as downhill")
+	}
+	if IsDownhillSki(backcountry) {
+		t.Errorf("expected BackcountrySki to NOT be downhill")
+	}
+
+	if IsSkiTour(alpine) {
+		t.Errorf("AlpineSki must not be recognized as ski tour")
+	}
+	if !IsSkiTour(backcountry) {
+		t.Errorf("BackcountrySki must be recognized as ski tour")
+	}
+
+	// Verify stats calculation ignores downhill
+	activities := []*ActivityDetail{alpine, snowboard, backcountry}
+	_, totalSki, _ := CalculatePeriodicStatsFromActivities(activities, StatsOptions{
+		SportType: "ski_tour",
+	})
+
+	if totalSki.Count != 1 {
+		t.Errorf("expected 1 ski tour activity, got %d", totalSki.Count)
+	}
+	if totalSki.ElevationM != 1200 {
+		t.Errorf("expected 1200m elevation gain, got %f", totalSki.ElevationM)
+	}
+
+	// Also verify 'all' ignores downhill
+	_, totalAll, _ := CalculatePeriodicStatsFromActivities(activities, StatsOptions{
+		SportType: "all",
+	})
+	if totalAll.Count != 1 {
+		t.Errorf("expected 1 activity in 'all', got %d", totalAll.Count)
+	}
+}
+
+func TestGapFillingAndSubcategories(t *testing.T) {
+	// 1. Test month gap filling in a specific year
+	actApr := &ActivityDetail{
+		ID:        201,
+		Type:      "BackcountrySki",
+		SportType: "BackcountrySki",
+		StartDate: time.Date(2024, 4, 10, 10, 0, 0, 0, time.UTC),
+		Distance:  5000,
+	}
+	actDec := &ActivityDetail{
+		ID:        202,
+		Type:      "BackcountrySki",
+		SportType: "BackcountrySki",
+		StartDate: time.Date(2024, 12, 5, 10, 0, 0, 0, time.UTC),
+		Distance:  8000,
+	}
+
+	periods, total, _ := CalculatePeriodicStatsFromActivities([]*ActivityDetail{actApr, actDec}, StatsOptions{
+		Period:    "month",
+		Year:      2024,
+		SportType: "ski_tour",
+	})
+
+	if total.Count != 2 {
+		t.Errorf("expected total count 2, got %d", total.Count)
+	}
+
+	// For a specific year, all 12 months should be generated so gaps show as zero bars
+	if len(periods) != 12 {
+		t.Fatalf("expected 12 months for 2024, got %d", len(periods))
+	}
+	if periods[0].Key != "2024-01" || periods[0].Count != 0 {
+		t.Errorf("expected 2024-01 to have count 0, got %d", periods[0].Count)
+	}
+	if periods[3].Key != "2024-04" || periods[3].Count != 1 {
+		t.Errorf("expected 2024-04 to have count 1, got %d", periods[3].Count)
+	}
+	if periods[4].Key != "2024-05" || periods[4].Count != 0 {
+		t.Errorf("expected 2024-05 gap to have count 0, got %d", periods[4].Count)
+	}
+	if periods[11].Key != "2024-12" || periods[11].Count != 1 {
+		t.Errorf("expected 2024-12 to have count 1, got %d", periods[11].Count)
+	}
+
+	// 2. Test year gap filling across all years (e.g. 2021 and 2024 activities)
+	act2021 := &ActivityDetail{
+		ID:        203,
+		Type:      "Run",
+		SportType: "Run",
+		StartDate: time.Date(2021, 6, 1, 10, 0, 0, 0, time.UTC),
+		Distance:  10000,
+	}
+	act2024 := &ActivityDetail{
+		ID:        204,
+		Type:      "Run",
+		SportType: "Run",
+		StartDate: time.Date(2024, 6, 1, 10, 0, 0, 0, time.UTC),
+		Distance:  12000,
+	}
+	yearPeriods, _, _ := CalculatePeriodicStatsFromActivities([]*ActivityDetail{act2021, act2024}, StatsOptions{
+		Period:    "year",
+		Year:      0,
+		SportType: "run",
+	})
+
+	if len(yearPeriods) != 4 {
+		t.Fatalf("expected 4 years (2021, 2022, 2023, 2024), got %d", len(yearPeriods))
+	}
+	if yearPeriods[1].Key != "2022" || yearPeriods[1].Count != 0 {
+		t.Errorf("expected 2022 gap to have count 0, got %d", yearPeriods[1].Count)
+	}
+	if yearPeriods[2].Key != "2023" || yearPeriods[2].Count != 0 {
+		t.Errorf("expected 2023 gap to have count 0, got %d", yearPeriods[2].Count)
+	}
+
+	// 3. Test 'cardio': aggregates Running (including hike/walk), Cycling, and Backcountry Skiing, excluding other sports like kayak
+	trailRun := &ActivityDetail{ID: 301, Type: "Run", SportType: "TrailRun", StartDate: time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC), Distance: 10000}
+	gravelRide := &ActivityDetail{ID: 302, Type: "Ride", SportType: "GravelRide", StartDate: time.Date(2024, 5, 2, 0, 0, 0, 0, time.UTC), Distance: 30000}
+	mtb := &ActivityDetail{ID: 303, Type: "Ride", SportType: "MountainBikeRide", StartDate: time.Date(2024, 5, 3, 0, 0, 0, 0, time.UTC), Distance: 20000}
+	hike := &ActivityDetail{ID: 304, Type: "Hike", SportType: "Hike", StartDate: time.Date(2024, 5, 4, 0, 0, 0, 0, time.UTC), Distance: 5000}
+	skiTour := &ActivityDetail{ID: 305, Type: "BackcountrySki", SportType: "BackcountrySki", StartDate: time.Date(2024, 5, 5, 0, 0, 0, 0, time.UTC), Distance: 8000}
+	kayak := &ActivityDetail{ID: 306, Type: "Kayaking", SportType: "Kayaking", StartDate: time.Date(2024, 5, 6, 0, 0, 0, 0, time.UTC), Distance: 4000}
+
+	activities := []*ActivityDetail{trailRun, gravelRide, mtb, hike, skiTour, kayak}
+
+	_, cardioTot, cardioCats := CalculatePeriodicStatsFromActivities(activities, StatsOptions{
+		Period:    "month",
+		SportType: "cardio",
+	})
+
+	if cardioTot.Breakdowns["Running"] == nil {
+		t.Errorf("expected 'Running' breakdown under cardio")
+	}
+	if cardioTot.Breakdowns["Cycling"] == nil {
+		t.Errorf("expected 'Cycling' breakdown under cardio")
+	}
+	if cardioTot.Breakdowns["Backcountry Skiing"] == nil {
+		t.Errorf("expected 'Backcountry Skiing' breakdown under cardio")
+	}
+	if cardioTot.Breakdowns["Kayaking"] != nil {
+		t.Errorf("kayaking should NOT be included in cardio")
+	}
+	if len(cardioCats) != 3 {
+		t.Errorf("expected 3 cardio categories, got %d (%v)", len(cardioCats), cardioCats)
+	}
+
+	// 4. Test 'all': individual sports for everything
+	_, allTot, allCats := CalculatePeriodicStatsFromActivities(activities, StatsOptions{
+		Period:    "month",
+		SportType: "all",
+	})
+
+	if allTot.Breakdowns["Trail Run"] == nil {
+		t.Errorf("expected 'Trail Run' in all sports")
+	}
+	if allTot.Breakdowns["Gravel Cycling"] == nil {
+		t.Errorf("expected 'Gravel Cycling' in all sports")
+	}
+	if allTot.Breakdowns["Mountain Biking"] == nil {
+		t.Errorf("expected 'Mountain Biking' in all sports")
+	}
+	if allTot.Breakdowns["Hiking"] == nil {
+		t.Errorf("expected 'Hiking' in all sports")
+	}
+	if allTot.Breakdowns["Backcountry Skiing"] == nil {
+		t.Errorf("expected 'Backcountry Skiing' in all sports")
+	}
+	if allTot.Breakdowns["Kayaking"] == nil {
+		t.Errorf("expected 'Kayaking' in all sports")
+	}
+	if len(allCats) < 5 {
+		t.Errorf("expected at least 5 individual categories under all, got %d", len(allCats))
+	}
+}

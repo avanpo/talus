@@ -1,0 +1,1263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fitness & Progress - talus</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛰️</text></svg>">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-body: #f8fafc;
+            --bg-card: #ffffff;
+            --bg-card-hover: #f1f5f9;
+            --bg-subtle: #f1f5f9;
+            --border: #e2e8f0;
+            --border-light: #cbd5e1;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --text-dim: #94a3b8;
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --emerald: #16a34a;
+            --amber: #d97706;
+            --rose: #e11d48;
+            --indigo: #6366f1;
+            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-body);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background-color: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            padding: 0.85rem 1.5rem;
+            position: sticky;
+            top: 0;
+            z-index: 50;
+        }
+
+        .header-inner {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            font-size: 1.35rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            text-decoration: none;
+            color: var(--text-main);
+        }
+
+        .brand-icon { font-size: 1.5rem; }
+        .brand-badge {
+            font-size: 0.7rem;
+            background-color: #eff6ff;
+            color: var(--primary);
+            border: 1px solid #bfdbfe;
+            padding: 0.2rem 0.5rem;
+            border-radius: 9999px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        nav {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .nav-link {
+            padding: 0.5rem 0.9rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            text-decoration: none;
+            color: var(--text-muted);
+            transition: all 0.15s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .nav-link:hover {
+            color: var(--text-main);
+            background-color: var(--bg-subtle);
+        }
+
+        .nav-link.active {
+            color: #fff;
+            background-color: var(--primary);
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            padding: 0.35rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--emerald);
+        }
+        .status-dot.syncing {
+            background-color: var(--amber);
+            animation: pulse 1.2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.9); opacity: 0.6; }
+            50% { transform: scale(1.3); opacity: 1; }
+            100% { transform: scale(0.9); opacity: 0.6; }
+        }
+
+        .btn-sync {
+            background-color: var(--bg-card);
+            color: var(--text-main);
+            border: 1px solid var(--border);
+            padding: 0.4rem 0.85rem;
+            border-radius: 6px;
+            font-size: 0.82rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .btn-sync:hover {
+            background-color: var(--bg-subtle);
+            border-color: var(--border-light);
+        }
+
+        main {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 1.5rem;
+            width: 100%;
+            flex: 1;
+        }
+
+        .info-card {
+            background-color: #eff6ff;
+            border: 1px solid #bfdbfe;
+            border-left: 4px solid var(--primary);
+            border-radius: 8px;
+            padding: 1.25rem 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .info-card h3 {
+            font-size: 1.15rem;
+            margin-bottom: 0.5rem;
+            color: #1e3a8a;
+        }
+        .info-card p {
+            color: #1e40af;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        .methodology-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.25rem;
+            margin-bottom: 1.5rem;
+        }
+        .methodology-box {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            padding: 1.25rem;
+        }
+        .methodology-box h4 {
+            color: var(--primary);
+            font-size: 0.98rem;
+            margin-bottom: 0.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+        .methodology-box p {
+            font-size: 0.84rem;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+        .methodology-box code {
+            background-color: var(--bg-subtle);
+            padding: 0.15rem 0.35rem;
+            border-radius: 4px;
+            color: #0f172a;
+            font-size: 0.82rem;
+            font-weight: 600;
+        }
+
+        /* Controls Toolbar */
+        .controls-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: var(--shadow);
+            padding: 1rem 1.25rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1.25rem;
+            flex-wrap: wrap;
+        }
+        .controls-group {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .controls-label {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .select-input {
+            background-color: var(--bg-body);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 0.5rem 0.85rem;
+            border-radius: 6px;
+            font-size: 0.88rem;
+            font-weight: 500;
+            outline: none;
+            min-width: 260px;
+            cursor: pointer;
+        }
+        .select-input:focus {
+            border-color: var(--primary);
+        }
+
+        /* Toggle Switch */
+        .toggle-control {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.75rem;
+            cursor: pointer;
+            user-select: none;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            padding: 0.45rem 0.85rem;
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            transition: all 0.15s ease;
+        }
+        .toggle-control:hover {
+            border-color: var(--border-light);
+        }
+        .toggle-control input {
+            position: absolute;
+            opacity: 0;
+            pointer-events: none;
+        }
+        .toggle-track {
+            position: relative;
+            width: 42px;
+            height: 22px;
+            background-color: #cbd5e1;
+            border-radius: 9999px;
+            transition: background-color 0.2s ease;
+            flex-shrink: 0;
+        }
+        .toggle-thumb {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            width: 18px;
+            height: 18px;
+            background-color: #ffffff;
+            border-radius: 50%;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+            transition: transform 0.2s ease;
+        }
+        .toggle-control input:checked + .toggle-track {
+            background-color: var(--primary);
+        }
+        .toggle-control input:checked + .toggle-track .toggle-thumb {
+            transform: translateX(20px);
+        }
+        .toggle-text {
+            display: flex;
+            flex-direction: column;
+            font-size: 0.84rem;
+            color: var(--text-main);
+        }
+        .toggle-subtext {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+        }
+
+        /* Quick Stat Cards */
+        .stat-cards-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 1.5rem;
+        }
+        .stat-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem 1.25rem;
+            box-shadow: var(--shadow);
+        }
+        .stat-card-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.25rem;
+        }
+        .stat-card-value {
+            font-size: 1.35rem;
+            font-weight: 700;
+            color: var(--text-main);
+        }
+        .stat-card-sub {
+            font-size: 0.78rem;
+            color: var(--text-dim);
+            margin-top: 0.2rem;
+        }
+
+        .chart-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: var(--shadow);
+            padding: 1.25rem;
+            margin-bottom: 1.5rem;
+        }
+        .chart-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+        .chart-title {
+            font-size: 1.05rem;
+            font-weight: 600;
+            color: var(--text-main);
+        }
+        .chart-desc {
+            font-size: 0.82rem;
+            color: var(--text-muted);
+        }
+        .chart-container {
+            position: relative;
+            height: 340px;
+            width: 100%;
+        }
+
+        .table-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+            margin-bottom: 1.5rem;
+        }
+        .table-responsive {
+            overflow-x: auto;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.86rem;
+            text-align: left;
+        }
+        thead th {
+            background-color: var(--bg-subtle);
+            color: var(--text-muted);
+            font-weight: 600;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+        }
+        tbody tr {
+            border-bottom: 1px solid var(--border);
+            transition: background-color 0.1s;
+        }
+        tbody tr:hover {
+            background-color: var(--bg-card-hover);
+        }
+        tbody td {
+            padding: 0.75rem 1rem;
+            color: var(--text-main);
+            white-space: nowrap;
+        }
+        .subrow td {
+            color: var(--text-muted);
+            font-size: 0.82rem;
+            background-color: #f8fafc;
+        }
+
+        .cell-highlight {
+            font-weight: 700;
+            color: var(--primary);
+        }
+        .cell-subdued {
+            color: var(--text-dim);
+            font-size: 0.8rem;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge-green { background: #dcfce7; color: #15803d; }
+        .badge-rose { background: #ffe4e6; color: #be123c; }
+        .badge-blue { background: #dbeafe; color: #1d4ed8; }
+        .badge-amber { background: #fef3c7; color: #b45309; }
+        .badge-gray { background: #f1f5f9; color: #475569; }
+
+        .section-header {
+            margin: 2rem 0 1rem 0;
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .section-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--text-main);
+        }
+        .section-subtitle {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        footer {
+            text-align: center;
+            padding: 1.5rem;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            border-top: 1px solid var(--border);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-inner">
+            <a href="/" class="brand">
+                <span class="brand-icon">⛰️</span>
+                <span>talus</span>
+                <span class="brand-badge">Telemetry</span>
+            </a>
+            <nav>
+                <a href="/" class="nav-link">Volume</a>
+                <a href="/progress" class="nav-link active">Fitness & Progress</a>
+            </nav>
+            <div class="header-actions">
+                <div class="status-pill" id="statusPill">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="statusText">Checking...</span>
+                </div>
+                <button class="btn-sync" id="btnSync" onclick="triggerSync()">Sync Now</button>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <div class="controls-card" style="margin-bottom: 1.5rem;">
+            <div class="controls-group">
+                <span class="controls-label" style="font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.8rem; color: var(--text-main);">Sport:</span>
+                <select id="sportSelect" class="select-input" onchange="onSportChange()" style="font-size: 0.95rem; font-weight: 600; padding: 0.55rem 1.1rem; min-width: 250px;">
+                    <option value="running" selected>Running (Road &amp; Trail)</option>
+                    <option value="cycling">Cycling (All Types)</option>
+                    <option value="skiing">Backcountry Skiing</option>
+                </select>
+            </div>
+            <div style="font-size: 0.85rem; color: var(--text-muted);" id="sportDescription">
+                Aggregated road &amp; trail running telemetry and segments
+            </div>
+        </div>
+
+        <div class="info-card">
+            <h3>How We Measure Cardiovascular Endurance & Fitness Progress</h3>
+            <p>
+                Traditional pace tracking is easily distorted by weather, elevation, and acute fatigue. Talus measures physiological progress using second-by-second telemetry, heart rate efficiency, and fatigue-normalized segment comparisons developed for endurance trail and road athletes.
+            </p>
+        </div>
+
+        <div class="methodology-grid">
+            <div class="methodology-box">
+                <h4>Aerobic Efficiency Factor (EF)</h4>
+                <p>
+                    <strong>Formula:</strong> <code>Speed (m/min) &divide; Average HR (bpm)</code><br>
+                    EF reflects cardiovascular stroke volume &mdash; how much physical ground you cover per single heartbeat. As aerobic mitochondrial base builds, you cover more distance per beat. An upward trend over weeks confirms genuine aerobic adaptation.
+                </p>
+            </div>
+
+            <div class="methodology-box">
+                <h4>Aerobic Decoupling (Pa:Hr)</h4>
+                <p>
+                    <strong>Formula:</strong> <code>(EF 1st Half &minus; EF 2nd Half) &divide; EF 1st Half</code><br>
+                    Decoupling measures cardiac drift during steady-state runs. A drift <strong>under 5%</strong> confirms strong aerobic stamina with minimal fatigue. A drift <strong>&gt; 5%</strong> indicates acute fatigue, dehydration, thermal strain, or exceeding your current aerobic threshold.
+                </p>
+            </div>
+
+            <div class="methodology-box">
+                <h4>Grade-Adjusted Pace (GAP)</h4>
+                <p>
+                    <strong>Model:</strong> Minetti et al. metabolic energy cost curves.<br>
+                    Trail elevation makes raw pace comparisons meaningless. GAP converts climbing energy (1m ascent &approx; 7.5m flat distance) into the equivalent flat-road speed, allowing accurate fitness comparisons regardless of vertical gain.
+                </p>
+            </div>
+
+            <div class="methodology-box">
+                <h4>Fatigue & Load Normalization</h4>
+                <p>
+                    <strong>Model:</strong> In-Run Position + Acute 7-Day Training Load.<br>
+                    Running a segment at km 15 of a long run during an 80km training week is vastly harder than on fresh legs. Talus normalizes segment scores based on prior 7-day cumulative load and pre-segment distance within the workout.
+                </p>
+            </div>
+        </div>
+
+        <!-- Overall Fitness Trends Section -->
+        <div class="section-header">
+            <div>
+                <h2 class="section-title">Cardiovascular Fitness Trends</h2>
+                <div class="section-subtitle">Macro-level physiological efficiency and aerobic decoupling across recorded activities.</div>
+            </div>
+        </div>
+
+        <div class="chart-card">
+            <div class="chart-header">
+                <div>
+                    <h3 class="chart-title">Cardiovascular Efficiency Factor (EF) Over Time</h3>
+                    <div class="chart-desc">Distance covered per heartbeat (Speed in m/min &divide; HR in bpm, normalized for elevation).</div>
+                </div>
+            </div>
+            <div class="chart-container">
+                <canvas id="efChart"></canvas>
+            </div>
+        </div>
+
+        <div class="chart-card">
+            <div class="chart-header">
+                <div>
+                    <h3 class="chart-title">Aerobic Decoupling Drift Rate (Target &lt; 5%)</h3>
+                    <div class="chart-desc">Cardiac drift comparing efficiency between 1st half and 2nd half of steady efforts.</div>
+                </div>
+            </div>
+            <div class="chart-container">
+                <canvas id="decouplingChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Repeated Segment Progressions Section -->
+        <div class="section-header">
+            <div>
+                <h2 class="section-title">Repeated Segment Progressions</h2>
+                <div class="section-subtitle">Track physiological efficiency over identical stretches of trail and road across seasons.</div>
+            </div>
+        </div>
+
+        <div class="controls-card">
+            <div class="controls-group">
+                <span class="controls-label">Segment:</span>
+                <select id="segmentSelect" class="select-input" onchange="onSegmentSelectChange()">
+                    <option value="">Loading segments...</option>
+                </select>
+            </div>
+
+            <div class="controls-group">
+                <label class="toggle-control" title="Adjusts efficiency and pace for in-run elapsed distance and prior 7-day training volume">
+                    <input type="checkbox" id="fatigueToggle" checked onchange="onToggleFatigue()">
+                    <span class="toggle-track">
+                        <span class="toggle-thumb"></span>
+                    </span>
+                    <span class="toggle-text">
+                        <strong>Fatigue-Adjusted Scoring</strong>
+                        <span class="toggle-subtext">Normalize for pre-run load &amp; in-run position</span>
+                    </span>
+                </label>
+            </div>
+        </div>
+
+        <div class="stat-cards-grid" id="segmentStatsGrid" style="display:none;">
+            <div class="stat-card">
+                <div class="stat-card-label">Segment Profile</div>
+                <div class="stat-card-value" id="statSegDist">-</div>
+                <div class="stat-card-sub" id="statSegGrade">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-label">Recorded Efforts</div>
+                <div class="stat-card-value" id="statSegEfforts">-</div>
+                <div class="stat-card-sub">Completed activities</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-label" id="statPaceLabel">Best Pace</div>
+                <div class="stat-card-value" id="statSegBestPace">-</div>
+                <div class="stat-card-sub" id="statSegRawPaceSub">Raw: -</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-label" id="statEFLabel">Best Efficiency (EF)</div>
+                <div class="stat-card-value" id="statSegBestEF">-</div>
+                <div class="stat-card-sub" id="statSegRawEFSub">Raw: -</div>
+            </div>
+        </div>
+
+        <div class="chart-card" id="segmentChartCard">
+            <div class="chart-header">
+                <div>
+                    <h3 class="chart-title" id="segmentChartTitle">Segment Efficiency Over Time</h3>
+                    <div class="chart-desc" id="segmentChartDesc">Comparing cardiovascular efficiency across repeated attempts.</div>
+                </div>
+            </div>
+            <div class="chart-container">
+                <canvas id="segmentChart"></canvas>
+            </div>
+        </div>
+
+        <div class="table-card">
+            <div class="chart-header" style="padding:1.25rem 1.25rem 0.5rem 1.25rem;">
+                <div>
+                    <h3 class="chart-title" id="segmentTableTitle">Segment Effort History</h3>
+                    <div class="chart-desc">Detailed chronological telemetry for each recorded effort.</div>
+                </div>
+            </div>
+            <div class="table-responsive">
+                <table id="segmentEffortsTable">
+                    <thead>
+                        <tr>
+                            <th>Date &amp; Activity</th>
+                            <th>Time</th>
+                            <th id="thPace">Pace</th>
+                            <th>Avg HR</th>
+                            <th id="thEF">Efficiency (EF)</th>
+                            <th>In-Run Position</th>
+                            <th>Prior 7-Day Load</th>
+                            <th>Fatigue Impact</th>
+                            <th>Rank</th>
+                        </tr>
+                    </thead>
+                    <tbody id="segmentEffortsTableBody">
+                        <tr><td colspan="9" style="text-align:center; color:var(--text-dim);">Select a segment above to view effort history.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        talus • Local endurance telemetry and training analytics
+    </footer>
+
+    <script>
+        let currentSport = 'running';
+        let progressData = null;
+        let selectedSegment = null;
+        let segmentChartInstance = null;
+        let efChartInstance = null;
+        let decouplingChartInstance = null;
+
+        function onSportChange() {
+            currentSport = document.getElementById('sportSelect').value;
+            const desc = document.getElementById('sportDescription');
+            if (currentSport === 'running') {
+                desc.textContent = 'Aggregated road & trail running telemetry and segments';
+            } else if (currentSport === 'cycling') {
+                desc.textContent = 'Aggregated cycling (road, gravel, mountain bike, virtual)';
+            } else if (currentSport === 'skiing') {
+                desc.textContent = 'Backcountry ski touring, skinning & skimo telemetry';
+            }
+            loadProgress();
+        }
+
+        async function updateStatus() {
+            try {
+                const res = await fetch('/api/status');
+                if (!res.ok) return;
+                const data = await res.json();
+                const dot = document.getElementById('statusDot');
+                const text = document.getElementById('statusText');
+                const btn = document.getElementById('btnSync');
+
+                if (data.is_syncing) {
+                    dot.className = 'status-dot syncing';
+                    text.innerText = 'Syncing...';
+                    btn.disabled = true;
+                    btn.innerText = 'Syncing...';
+                } else {
+                    dot.className = 'status-dot';
+                    text.innerText = data.last_sync_ago ? 'Synced ' + data.last_sync_ago : 'Not synced yet';
+                    btn.disabled = false;
+                    btn.innerText = 'Sync Now';
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function triggerSync() {
+            const btn = document.getElementById('btnSync');
+            btn.disabled = true;
+            btn.innerText = 'Starting...';
+            try {
+                await fetch('/api/sync', { method: 'POST' });
+                setTimeout(updateStatus, 500);
+            } catch (e) {
+                alert('Failed to trigger sync: ' + e);
+                updateStatus();
+            }
+        }
+
+        async function loadProgress() {
+            try {
+                const res = await fetch(`/api/progress?sport=${currentSport}`);
+                if (!res.ok) throw new Error('API error');
+                progressData = await res.json();
+
+                initSegmentSelector();
+                renderMacroEFChart();
+                renderDecouplingChart();
+            } catch (e) {
+                console.error(e);
+                document.getElementById('segmentEffortsTableBody').innerHTML = '<tr><td colspan="9" style="text-align:center; color:var(--rose);">Error loading segment data.</td></tr>';
+            }
+        }
+
+        function isFatigueAdjusted() {
+            return document.getElementById('fatigueToggle').checked;
+        }
+
+        function onToggleFatigue() {
+            renderSelectedSegment();
+            renderMacroEFChart();
+        }
+
+        function initSegmentSelector() {
+            const select = document.getElementById('segmentSelect');
+            select.innerHTML = '';
+
+            const segments = progressData.segments || [];
+            if (segments.length === 0) {
+                const sportLabel = currentSport === 'running' ? 'running' : (currentSport === 'cycling' ? 'cycling' : 'backcountry skiing');
+                select.innerHTML = `<option value="">No repeated ${sportLabel} segments found</option>`;
+                document.getElementById('segmentStatsGrid').style.display = 'none';
+                if (segmentChartInstance) {
+                    segmentChartInstance.destroy();
+                    segmentChartInstance = null;
+                }
+                document.getElementById('segmentChartTitle').textContent = `No Repeated ${currentSport === 'running' ? 'Running' : (currentSport === 'cycling' ? 'Cycling' : 'Skiing')} Segments`;
+                document.getElementById('segmentTableTitle').textContent = 'Efforts';
+                document.getElementById('segmentEffortsTableBody').innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--text-dim);">No repeated ${sportLabel} segments with 4+ efforts found in your activities yet.</td></tr>`;
+                selectedSegment = null;
+                return;
+            }
+
+            segments.forEach((seg, idx) => {
+                const opt = document.createElement('option');
+                opt.value = seg.id;
+                opt.textContent = `${seg.name} (${seg.effort_count} efforts • ${seg.distance} ${progressData.unit || 'km'})`;
+                select.appendChild(opt);
+            });
+
+            // Select first segment by default
+            selectedSegment = segments[0];
+            select.value = selectedSegment.id;
+            renderSelectedSegment();
+        }
+
+        function onSegmentSelectChange() {
+            const select = document.getElementById('segmentSelect');
+            const segId = parseInt(select.value, 10);
+            const segments = progressData.segments || [];
+            selectedSegment = segments.find(s => s.id === segId) || null;
+            renderSelectedSegment();
+        }
+
+        function renderSelectedSegment() {
+            if (!selectedSegment) return;
+
+            const adjusted = isFatigueAdjusted();
+            const unit = progressData.unit || 'km';
+
+            // Update stats grid
+            document.getElementById('segmentStatsGrid').style.display = 'grid';
+            document.getElementById('statSegDist').textContent = `${selectedSegment.distance} ${unit}`;
+            document.getElementById('statSegGrade').textContent = `Avg Grade: ${selectedSegment.average_grade}%`;
+            document.getElementById('statSegEfforts').textContent = selectedSegment.effort_count;
+
+            if (adjusted) {
+                document.getElementById('statPaceLabel').textContent = 'Best Adjusted Pace';
+                document.getElementById('statSegBestPace').textContent = selectedSegment.best_adjusted_pace;
+                document.getElementById('statSegRawPaceSub').textContent = `Raw: ${selectedSegment.best_pace}`;
+
+                document.getElementById('statEFLabel').textContent = 'Best Adjusted EF';
+                document.getElementById('statSegBestEF').textContent = selectedSegment.best_adjusted_ef.toFixed(3);
+                document.getElementById('statSegRawEFSub').textContent = `Raw: ${selectedSegment.best_ef.toFixed(3)}`;
+
+                document.getElementById('thPace').textContent = 'Adjusted / Raw Pace';
+                document.getElementById('thEF').textContent = 'Adjusted / Raw EF';
+            } else {
+                document.getElementById('statPaceLabel').textContent = 'Best Raw Pace';
+                document.getElementById('statSegBestPace').textContent = selectedSegment.best_pace;
+                document.getElementById('statSegRawPaceSub').textContent = `Adjusted: ${selectedSegment.best_adjusted_pace}`;
+
+                document.getElementById('statEFLabel').textContent = 'Best Raw EF';
+                document.getElementById('statSegBestEF').textContent = selectedSegment.best_ef.toFixed(3);
+                document.getElementById('statSegRawEFSub').textContent = `Adjusted: ${selectedSegment.best_adjusted_ef.toFixed(3)}`;
+
+                document.getElementById('thPace').textContent = 'Raw / Adjusted Pace';
+                document.getElementById('thEF').textContent = 'Raw / Adjusted EF';
+            }
+
+            document.getElementById('segmentChartTitle').textContent = `${selectedSegment.name} - Efficiency Progression`;
+            document.getElementById('segmentTableTitle').textContent = `${selectedSegment.name} - Efforts (${selectedSegment.effort_count})`;
+
+            renderSegmentChart(selectedSegment, adjusted);
+            renderSegmentTable(selectedSegment, adjusted);
+        }
+
+        function renderSegmentChart(seg, adjusted) {
+            const ctx = document.getElementById('segmentChart').getContext('2d');
+            if (!seg || !seg.efforts || seg.efforts.length === 0) return;
+
+            const tStart = new Date(seg.efforts[0].date).getTime();
+            const tEnd = new Date(seg.efforts[seg.efforts.length - 1].date).getTime();
+            const spanDays = Math.max(1, (tEnd - tStart) / (1000 * 60 * 60 * 24));
+
+            // Break lines when gap between efforts exceeds 75 days (off-season / break)
+            const maxGapMs = 75 * 24 * 60 * 60 * 1000;
+
+            const rawPoints = [];
+            const adjPoints = [];
+
+            for (let i = 0; i < seg.efforts.length; i++) {
+                const eff = seg.efforts[i];
+                const t = new Date(eff.date).getTime();
+
+                if (i > 0) {
+                    const prevT = new Date(seg.efforts[i - 1].date).getTime();
+                    if (t - prevT > maxGapMs) {
+                        const midT = Math.round((prevT + t) / 2);
+                        rawPoints.push({ x: midT, y: null });
+                        adjPoints.push({ x: midT, y: null });
+                    }
+                }
+
+                rawPoints.push({
+                    x: t,
+                    y: eff.ef,
+                    effort: eff
+                });
+
+                adjPoints.push({
+                    x: t,
+                    y: eff.adjusted_ef,
+                    effort: eff
+                });
+            }
+
+            const datasets = [];
+
+            if (adjusted) {
+                datasets.push({
+                    type: 'line',
+                    label: 'Fatigue-Adjusted EF',
+                    data: adjPoints,
+                    spanGaps: false,
+                    backgroundColor: 'rgba(37, 99, 235, 0.12)',
+                    borderColor: '#2563eb',
+                    borderWidth: 2.5,
+                    pointBackgroundColor: '#2563eb',
+                    pointRadius: 5,
+                    pointHoverRadius: 7,
+                    tension: 0.15
+                });
+                datasets.push({
+                    type: 'line',
+                    label: 'Raw EF (Unadjusted)',
+                    data: rawPoints,
+                    spanGaps: false,
+                    borderColor: '#94a3b8',
+                    borderWidth: 1.5,
+                    borderDash: [5, 4],
+                    pointBackgroundColor: '#cbd5e1',
+                    pointBorderColor: '#64748b',
+                    pointRadius: 4,
+                    pointHoverRadius: 6,
+                    tension: 0.15
+                });
+            } else {
+                datasets.push({
+                    type: 'line',
+                    label: 'Raw Efficiency Factor (EF)',
+                    data: rawPoints,
+                    spanGaps: false,
+                    backgroundColor: 'rgba(37, 99, 235, 0.12)',
+                    borderColor: '#2563eb',
+                    borderWidth: 2.5,
+                    pointBackgroundColor: '#2563eb',
+                    pointRadius: 5,
+                    pointHoverRadius: 7,
+                    tension: 0.15
+                });
+            }
+
+            if (segmentChartInstance) segmentChartInstance.destroy();
+            segmentChartInstance = new Chart(ctx, {
+                data: { datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    normalized: true,
+                    interaction: { mode: 'nearest', axis: 'x', intersect: false },
+                    plugins: {
+                        legend: { labels: { color: '#334155', font: { weight: 600 } } },
+                        tooltip: {
+                            backgroundColor: '#0f172a',
+                            titleColor: '#f8fafc',
+                            bodyColor: '#e2e8f0',
+                            padding: 12,
+                            cornerRadius: 8,
+                            callbacks: {
+                                title: function(items) {
+                                    if (!items || items.length === 0) return '';
+                                    const raw = items[0].raw;
+                                    if (raw && raw.effort) return raw.effort.date_fmt;
+                                    return '';
+                                },
+                                label: function(context) {
+                                    const val = context.parsed.y;
+                                    if (val == null) return null;
+                                    return ` ${context.dataset.label}: ${val.toFixed(3)}`;
+                                },
+                                afterBody: function(items) {
+                                    if (!items || items.length === 0) return [];
+                                    const raw = items[0].raw;
+                                    if (!raw || !raw.effort) return [];
+                                    const effort = raw.effort;
+                                    return [
+                                        `Activity: ${effort.activity_name}`,
+                                        `Segment Time: ${effort.moving_time_fmt}`,
+                                        `Raw Pace: ${effort.avg_pace} | Adj: ${effort.adjusted_pace}`,
+                                        `Avg HR: ${effort.avg_hr} bpm`,
+                                        `In-Run Position: ${effort.pre_segment_dist_fmt} (${effort.pre_segment_time_fmt} in) [${effort.in_run_fatigue_pct >= 0 ? '+' : ''}${effort.in_run_fatigue_pct}%]`,
+                                        `Prior 7-Day Load: ${effort.prior_7days_dist_fmt} (${effort.prior_7days_count} runs) [${effort.pre_run_fatigue_pct >= 0 ? '+' : ''}${effort.pre_run_fatigue_pct}%]`,
+                                        `Total Fatigue Impact: +${effort.total_fatigue_pct}%`
+                                    ];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            ticks: {
+                                color: '#64748b',
+                                autoSkip: true,
+                                maxTicksLimit: 10,
+                                callback: function(val) {
+                                    const d = new Date(val);
+                                    if (spanDays <= 90) {
+                                        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                                    }
+                                    return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+                                }
+                            },
+                            grid: { display: false }
+                        },
+                        y: {
+                            ticks: { color: '#64748b' },
+                            grid: { color: '#f1f5f9' },
+                            title: { display: true, text: 'Efficiency Factor (Speed / HR)', color: '#475569', font: { weight: 600 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderSegmentTable(seg, adjusted) {
+            const tbody = document.getElementById('segmentEffortsTableBody');
+            let html = '';
+
+            seg.efforts.forEach(eff => {
+                const paceCol = adjusted
+                    ? `<div><span class="cell-highlight">${eff.adjusted_pace}</span> <span class="cell-subdued">(${eff.avg_pace})</span></div>`
+                    : `<div><span class="cell-highlight">${eff.avg_pace}</span> <span class="cell-subdued">(${eff.adjusted_pace})</span></div>`;
+
+                const efCol = adjusted
+                    ? `<div><span class="cell-highlight">${eff.adjusted_ef.toFixed(3)}</span> <span class="cell-subdued">(${eff.ef.toFixed(3)})</span></div>`
+                    : `<div><span class="cell-highlight">${eff.ef.toFixed(3)}</span> <span class="cell-subdued">(${eff.adjusted_ef.toFixed(3)})</span></div>`;
+
+                const inRunStr = `${eff.pre_segment_dist_fmt} • ${eff.pre_segment_time_fmt}`;
+                const priorStr = eff.prior_7days_count > 0 ? `${eff.prior_7days_dist_fmt} (${eff.prior_7days_count} runs)` : 'Fresh (0 km)';
+                const fatigueBadge = eff.total_fatigue_pct > 0
+                    ? `<span class="badge ${eff.total_fatigue_pct > 10 ? 'badge-rose' : (eff.total_fatigue_pct > 5 ? 'badge-amber' : 'badge-blue')}">+${eff.total_fatigue_pct}%</span>`
+                    : `<span class="badge badge-gray">Baseline</span>`;
+
+                const rankBadge = eff.pr_rank ? `<span class="badge badge-green">PR #${eff.pr_rank}</span>` : `<span class="cell-subdued">-</span>`;
+
+                html += `<tr>
+                    <td>
+                        <strong>${eff.date_fmt}</strong><br>
+                        <span class="cell-subdued">${eff.activity_name}</span>
+                    </td>
+                    <td>${eff.moving_time_fmt}</td>
+                    <td>${paceCol}</td>
+                    <td>${eff.avg_hr} bpm</td>
+                    <td>${efCol}</td>
+                    <td>${inRunStr}</td>
+                    <td>${priorStr}</td>
+                    <td>${fatigueBadge}</td>
+                    <td>${rankBadge}</td>
+                </tr>`;
+            });
+
+            tbody.innerHTML = html;
+        }
+
+        function renderMacroEFChart() {
+            if (!progressData || !progressData.runs) return;
+
+            const ctx = document.getElementById('efChart').getContext('2d');
+            const runs = progressData.runs;
+            if (runs.length === 0) {
+                if (efChartInstance) {
+                    efChartInstance.destroy();
+                    efChartInstance = null;
+                }
+                return;
+            }
+
+            const labels = runs.map(r => r.date_fmt);
+            const rawEFs = runs.map(r => r.ef);
+            const adjEFs = runs.map(r => r.adjusted_ef || r.ef);
+            const adjusted = isFatigueAdjusted();
+
+            const computeMA = (arr) => {
+                const ma = [];
+                for (let i = 0; i < arr.length; i++) {
+                    const start = Math.max(0, i - 6);
+                    const slice = arr.slice(start, i + 1);
+                    const avg = slice.reduce((a, b) => a + b, 0) / slice.length;
+                    ma.push(Math.round(avg * 1000) / 1000);
+                }
+                return ma;
+            };
+
+            const datasets = [];
+
+            if (adjusted) {
+                datasets.push({
+                    type: 'line',
+                    showLine: false,
+                    label: 'Fatigue-Adjusted Activity EF',
+                    data: adjEFs,
+                    backgroundColor: 'rgba(37, 99, 235, 0.75)',
+                    borderColor: '#2563eb',
+                    pointRadius: 4.5,
+                    pointHoverRadius: 6.5
+                });
+                datasets.push({
+                    type: 'line',
+                    showLine: false,
+                    label: 'Raw Activity EF',
+                    data: rawEFs,
+                    backgroundColor: 'rgba(148, 163, 184, 0.45)',
+                    borderColor: '#94a3b8',
+                    pointRadius: 3.5,
+                    pointHoverRadius: 5.5
+                });
+                datasets.push({
+                    type: 'line',
+                    showLine: true,
+                    label: '7-Activity Smoothed Trend (Adjusted MA)',
+                    data: computeMA(adjEFs),
+                    borderColor: '#2563eb',
+                    backgroundColor: 'transparent',
+                    borderWidth: 2.5,
+                    tension: 0.3,
+                    pointRadius: 0
+                });
+            } else {
+                datasets.push({
+                    type: 'line',
+                    showLine: false,
+                    label: 'Activity EF (Speed / HR)',
+                    data: rawEFs,
+                    backgroundColor: 'rgba(247, 37, 133, 0.65)',
+                    borderColor: '#f72585',
+                    pointRadius: 4.5,
+                    pointHoverRadius: 6.5
+                });
+                datasets.push({
+                    type: 'line',
+                    showLine: true,
+                    label: '7-Activity Smoothed Trend (Moving Avg)',
+                    data: computeMA(rawEFs),
+                    borderColor: '#00b4d8',
+                    backgroundColor: 'transparent',
+                    borderWidth: 2.5,
+                    tension: 0.3,
+                    pointRadius: 0
+                });
+            }
+
+            if (efChartInstance) efChartInstance.destroy();
+            efChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: { labels, datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    normalized: true,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { labels: { color: '#334155', font: { weight: 600 } } },
+                        tooltip: {
+                            backgroundColor: '#0f172a',
+                            titleColor: '#f8fafc',
+                            bodyColor: '#e2e8f0',
+                            padding: 10,
+                            cornerRadius: 8,
+                            callbacks: {
+                                afterBody: function(items) {
+                                    const idx = items[0].dataIndex;
+                                    const run = runs[idx];
+                                    return [
+                                        `Activity: ${run.name}`,
+                                        `Pace: ${run.avg_pace} (Adj: ${run.adjusted_pace || run.avg_pace})`,
+                                        `Avg HR: ${run.avg_hr} bpm`,
+                                        `Prior 7-Day Load: ${run.prior_7days_dist_fmt} (${run.prior_7days_count} runs) [${run.pre_run_fatigue_pct >= 0 ? '+' : ''}${run.pre_run_fatigue_pct}%]`
+                                    ];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#64748b', autoSkip: true, maxTicksLimit: 20 },
+                            grid: { display: false }
+                        },
+                        y: {
+                            ticks: { color: '#64748b' },
+                            grid: { color: '#f1f5f9' },
+                            title: { display: true, text: 'Efficiency Factor (Speed / HR)', color: '#475569', font: { weight: 600 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderDecouplingChart() {
+            if (!progressData || !progressData.runs) return;
+
+            const ctx = document.getElementById('decouplingChart').getContext('2d');
+            const runs = progressData.runs;
+            const decoupledRuns = runs.filter(r => r.has_decoupling);
+            if (decoupledRuns.length === 0) {
+                if (decouplingChartInstance) {
+                    decouplingChartInstance.destroy();
+                    decouplingChartInstance = null;
+                }
+                return;
+            }
+
+            const labels = decoupledRuns.map(r => r.date_fmt);
+            const decouplingValues = decoupledRuns.map(r => r.decoupling_pct);
+            const colors = decouplingValues.map(v => v <= 5.0 ? 'rgba(22, 163, 74, 0.85)' : 'rgba(225, 29, 72, 0.85)');
+
+            if (decouplingChartInstance) decouplingChartInstance.destroy();
+            decouplingChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Decoupling Drift (%)',
+                            data: decouplingValues,
+                            backgroundColor: colors,
+                            borderRadius: 4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    normalized: true,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { labels: { color: '#334155', font: { weight: 600 } } },
+                        tooltip: {
+                            backgroundColor: '#0f172a',
+                            titleColor: '#f8fafc',
+                            bodyColor: '#e2e8f0',
+                            padding: 10,
+                            cornerRadius: 8
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#64748b', autoSkip: true, maxTicksLimit: 20 },
+                            grid: { display: false }
+                        },
+                        y: {
+                            ticks: { color: '#64748b', callback: val => `${val}%` },
+                            grid: { color: '#f1f5f9' },
+                            title: { display: true, text: 'Cardiac Drift % (1st half vs 2nd half)', color: '#475569', font: { weight: 600 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        setInterval(updateStatus, 15000);
+        updateStatus();
+        loadProgress();
+    </script>
+</body>
+</html>
