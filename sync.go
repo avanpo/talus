@@ -29,6 +29,9 @@ type localActivityHeader struct {
 	SportType          string                `json:"sport_type"`
 	GearID             string                `json:"gear_id"`
 	Streams            map[string]StreamInfo `json:"streams"`
+	Manual             bool                  `json:"manual"`
+	Trainer            bool                  `json:"trainer"`
+	HasStreams         *bool                 `json:"has_streams"`
 }
 
 // needsUpdate checks if the local activity file needs to be re-downloaded based on summary comparison.
@@ -70,16 +73,19 @@ func needsUpdate(filename string, sa *SummaryActivity) (bool, string) {
 		return true, fmt.Sprintf("gear changed (%s -> %s)", local.GearID, sa.GearID)
 	}
 
-	// 6. Check if GPS activity is missing streams entirely
-	isGPS := sa.Type == "Run" || sa.SportType == "Run" || sa.SportType == "TrailRun" || sa.Type == "Ride"
-	if isGPS && (local.Streams == nil || len(local.Streams) == 0) {
-		return true, "missing streams"
+	// 6. Check if GPS activity is missing streams entirely (skip if manual, trainer, or confirmed no streams)
+	if !local.Manual && !local.Trainer && (local.HasStreams == nil || *local.HasStreams) {
+		isGPS := sa.Type == "Run" || sa.SportType == "Run" || sa.SportType == "TrailRun" || sa.Type == "Ride"
+		if isGPS && (local.Streams == nil || len(local.Streams) == 0) {
+			return true, "missing streams"
+		}
 	}
 
 	return false, ""
 }
 
 func fetchWithRetry(fetchFn func() ([]byte, error), desc string) ([]byte, error) {
+	retries := 0
 	for {
 		bytes, err := fetchFn()
 		if err != nil {
@@ -88,7 +94,12 @@ func fetchWithRetry(fetchFn func() ([]byte, error), desc string) ([]byte, error)
 				return nil, err
 			}
 			if isRateLimitError(err) {
-				fmt.Printf("Rate limit hit (%s). Waiting 15 minutes to resume...\n", desc)
+				retries++
+				if retries > 5 {
+					fmt.Printf("Rate limit hit repeatedly for %s (%d retries). Assuming daily rate limit reached.\n", desc, retries)
+					return nil, &RateLimitError{IsDaily: true, Message: err.Error()}
+				}
+				fmt.Printf("Rate limit hit (%s). Waiting 15 minutes to resume (retry %d/5)...\n", desc, retries)
 				time.Sleep(15 * time.Minute)
 				continue
 			}
@@ -118,11 +129,16 @@ func downloadAndSaveActivity(client *StravaClient, id int64, filename string) er
 	var detailMap map[string]interface{}
 	if err := json.Unmarshal(detailBytes, &detailMap); err == nil {
 		var streamsVal interface{}
-		if err := json.Unmarshal(streamBytes, &streamsVal); err == nil {
+		hasStreams := false
+		if err := json.Unmarshal(streamBytes, &streamsVal); err == nil && streamsVal != nil {
 			detailMap["streams"] = streamsVal
-			if mBytes, err := json.MarshalIndent(detailMap, "", "  "); err == nil {
-				mergedBytes = mBytes
+			if sMap, ok := streamsVal.(map[string]interface{}); ok && len(sMap) > 0 {
+				hasStreams = true
 			}
+		}
+		detailMap["has_streams"] = hasStreams
+		if mBytes, err := json.MarshalIndent(detailMap, "", "  "); err == nil {
+			mergedBytes = mBytes
 		}
 	}
 	if len(mergedBytes) == 0 {
@@ -210,6 +226,7 @@ func SyncActivitiesWithOptions(dir string, opts SyncOptions) error {
 	for {
 		fmt.Printf("Fetching page %d of activities list...\n", page)
 		var summaries []SummaryActivity
+		pageRetries := 0
 		for {
 			summaries, err = client.FetchSummaryActivities(afterTimestamp, page, perPage)
 			if err != nil {
@@ -220,7 +237,14 @@ func SyncActivitiesWithOptions(dir string, opts SyncOptions) error {
 					break
 				}
 				if isRateLimitError(err) {
-					fmt.Println("Rate limit hit. Waiting 15 minutes to resume...")
+					pageRetries++
+					if pageRetries > 5 {
+						fmt.Printf("Rate limit hit repeatedly on page %d (%d retries). Assuming daily rate limit reached.\n", page, pageRetries)
+						anyFailure = true
+						syncErr = &RateLimitError{IsDaily: true, Message: err.Error()}
+						break
+					}
+					fmt.Printf("Rate limit hit on page %d. Waiting 15 minutes to resume (retry %d/5)...\n", page, pageRetries)
 					time.Sleep(15 * time.Minute)
 					continue
 				}

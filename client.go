@@ -149,6 +149,17 @@ func (c *StravaClient) ensureValidToken() error {
 	return nil
 }
 
+func (c *StravaClient) isDailyLimitExceeded() bool {
+	if c.limitDaily > 0 && c.usageDaily >= c.limitDaily {
+		return true
+	}
+	// If Strava returned 429 but 15-minute quota was not reached, it is the daily quota that was reached
+	if c.limit15Min > 0 && c.usage15Min < c.limit15Min {
+		return true
+	}
+	return false
+}
+
 // FetchSummaryActivities retrieves summary activities created after the specified Unix epoch.
 // Strava's /athlete/activities endpoint is paginated.
 func (c *StravaClient) FetchSummaryActivities(after int64, page int, perPage int) ([]SummaryActivity, error) {
@@ -178,12 +189,8 @@ func (c *StravaClient) FetchSummaryActivities(after int64, page int, perPage int
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == http.StatusTooManyRequests {
-			isDaily := false
-			if c.limitDaily > 0 && c.usageDaily >= c.limitDaily {
-				isDaily = true
-			}
 			return nil, &RateLimitError{
-				IsDaily: isDaily,
+				IsDaily: c.isDailyLimitExceeded(),
 				Message: fmt.Sprintf("API request failed with status %s: %s", resp.Status, string(body)),
 			}
 		}
@@ -223,12 +230,8 @@ func (c *StravaClient) FetchActivityDetail(activityID int64) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == http.StatusTooManyRequests {
-			isDaily := false
-			if c.limitDaily > 0 && c.usageDaily >= c.limitDaily {
-				isDaily = true
-			}
 			return nil, &RateLimitError{
-				IsDaily: isDaily,
+				IsDaily: c.isDailyLimitExceeded(),
 				Message: fmt.Sprintf("API request failed with status %s: %s", resp.Status, string(body)),
 			}
 		}
@@ -267,12 +270,8 @@ func (c *StravaClient) FetchActivityStreams(activityID int64) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == http.StatusTooManyRequests {
-			isDaily := false
-			if c.limitDaily > 0 && c.usageDaily >= c.limitDaily {
-				isDaily = true
-			}
 			return nil, &RateLimitError{
-				IsDaily: isDaily,
+				IsDaily: c.isDailyLimitExceeded(),
 				Message: fmt.Sprintf("API request failed with status %s: %s", resp.Status, string(body)),
 			}
 		}

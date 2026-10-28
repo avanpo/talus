@@ -131,6 +131,9 @@
             background-color: var(--amber);
             animation: pulse 1.2s infinite;
         }
+        .status-dot.error {
+            background-color: #f43f5e;
+        }
 
         @keyframes pulse {
             0% { transform: scale(0.9); opacity: 0.6; }
@@ -427,11 +430,13 @@
                 if (data.is_syncing) {
                     dot.className = 'status-dot syncing';
                     text.innerText = 'Syncing...';
+                    text.title = 'Synchronization in progress';
                     btn.disabled = true;
                     btn.innerText = 'Syncing...';
                 } else {
-                    dot.className = 'status-dot';
+                    dot.className = data.last_sync_error ? 'status-dot error' : 'status-dot';
                     text.innerText = data.last_sync_ago ? 'Synced ' + data.last_sync_ago : 'Not synced yet';
+                    text.title = data.last_sync_error ? 'Last sync failed: ' + data.last_sync_error : (data.last_sync_summary || '');
                     btn.disabled = false;
                     btn.innerText = 'Sync Now';
                 }

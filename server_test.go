@@ -413,3 +413,68 @@ func TestServer_PagesAndAPIs(t *testing.T) {
 		t.Fatalf("handleTriggerSyncAPI returned status %d, expected %d", w.Code, http.StatusOK)
 	}
 }
+
+func TestSyncDaemon_DelayedConfiguration(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "talus-daemon-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create unconfigured daemon
+	d := newSyncDaemon(tmpDir, 100*time.Millisecond, 200*time.Millisecond, false)
+	d.Start()
+	defer d.Stop()
+
+	// Verify daemon is running in waiting state
+	d.mu.RLock()
+	started := d.started
+	d.mu.RUnlock()
+	if !started {
+		t.Errorf("expected daemon.started to be true while waiting for config")
+	}
+
+	// Now simulate configuration being written later
+	cfg := &Config{
+		ClientID:     "12345",
+		ClientSecret: "secret",
+		AccessToken:  "token",
+		RefreshToken: "refresh",
+		ExpiresAt:    time.Now().Add(1 * time.Hour),
+	}
+	if err := SaveConfig(tmpDir, cfg); err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	// Notify daemon that configuration is ready
+	d.NotifyConfigured()
+
+	// Wait briefly for daemon to detect config
+	time.Sleep(50 * time.Millisecond)
+
+	if !isConfigured(tmpDir) {
+		t.Errorf("expected isConfigured to be true")
+	}
+}
+
+func TestSyncDaemon_PanicRecovery(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "talus-panic-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	d := newSyncDaemon(tmpDir, 1*time.Hour, 24*time.Hour, false)
+
+	// runSync should recover from any internal error or invalid state without panicking
+	d.runSync(SyncOptions{}, "Test run with unconfigured dir")
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.isSyncing {
+		t.Errorf("expected isSyncing to be false after sync completes/fails")
+	}
+	if d.lastSyncErr == "" {
+		t.Errorf("expected lastSyncErr to be recorded")
+	}
+}

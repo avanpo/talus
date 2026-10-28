@@ -33,6 +33,8 @@ type SyncDaemon struct {
 	pendingClientSecret string
 
 	mu              sync.RWMutex
+	started         bool
+	configNotifyCh  chan struct{}
 	isSyncing       bool
 	lastSyncTime    time.Time
 	lastSyncErr     string
@@ -55,6 +57,7 @@ func newSyncDaemon(dir string, syncInterval, checkUpdatesInterval time.Duration,
 		checkUpdatesInterval: checkUpdatesInterval,
 		noSync:               noSync,
 		stopCh:               make(chan struct{}),
+		configNotifyCh:       make(chan struct{}, 1),
 	}
 
 	// Read initial metadata if available
@@ -67,21 +70,64 @@ func newSyncDaemon(dir string, syncInterval, checkUpdatesInterval time.Duration,
 	return d
 }
 
+func (d *SyncDaemon) NotifyConfigured() {
+	d.mu.Lock()
+	started := d.started
+	d.mu.Unlock()
+
+	if !started {
+		d.Start()
+		return
+	}
+
+	select {
+	case d.configNotifyCh <- struct{}{}:
+	default:
+	}
+}
+
 func (d *SyncDaemon) Start() {
 	if d.noSync {
 		log.Println("[Daemon] Background synchronization disabled (--no-sync)")
 		return
 	}
 
-	if !isConfigured(d.dir) {
-		log.Println("[Daemon] No config file found. Waiting for Strava authorization at http://localhost:8080/setup ...")
+	d.mu.Lock()
+	if d.started {
+		d.mu.Unlock()
 		return
 	}
-
-	log.Printf("[Daemon] Starting background sync daemon: sync interval=%v, check updates interval=%v\n",
-		d.syncInterval, d.checkUpdatesInterval)
+	d.started = true
+	d.mu.Unlock()
 
 	go func() {
+		// If unconfigured at launch, wait in background until configuration appears
+		if !isConfigured(d.dir) {
+			log.Println("[Daemon] No config file found. Waiting for Strava authorization...")
+			pollTicker := time.NewTicker(5 * time.Second)
+			defer pollTicker.Stop()
+
+			configured := false
+			for !configured {
+				select {
+				case <-pollTicker.C:
+					if isConfigured(d.dir) {
+						configured = true
+					}
+				case <-d.configNotifyCh:
+					if isConfigured(d.dir) {
+						configured = true
+					}
+				case <-d.stopCh:
+					return
+				}
+			}
+			log.Println("[Daemon] Configuration detected! Resuming background sync daemon...")
+		}
+
+		log.Printf("[Daemon] Starting background sync daemon: sync interval=%v, check updates interval=%v\n",
+			d.syncInterval, d.checkUpdatesInterval)
+
 		// Initial sync after a short delay so the HTTP server binds and serves immediately
 		select {
 		case <-time.After(3 * time.Second):
@@ -111,7 +157,15 @@ func (d *SyncDaemon) Start() {
 }
 
 func (d *SyncDaemon) Stop() {
-	close(d.stopCh)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	select {
+	case <-d.stopCh:
+		// already closed
+	default:
+		close(d.stopCh)
+	}
+	d.started = false
 }
 
 func (d *SyncDaemon) runSync(opts SyncOptions, reason string) {
@@ -123,6 +177,17 @@ func (d *SyncDaemon) runSync(opts SyncOptions, reason string) {
 	}
 	d.isSyncing = true
 	d.mu.Unlock()
+
+	defer func() {
+		if r := recover(); r != nil {
+			d.mu.Lock()
+			d.isSyncing = false
+			d.lastSyncErr = fmt.Sprintf("panic: %v", r)
+			d.lastSyncTime = time.Now()
+			d.mu.Unlock()
+			log.Printf("[Daemon] !!! Panic recovered in %s: %v\n", reason, r)
+		}
+	}()
 
 	log.Printf("[Daemon] >>> Starting %s...\n", reason)
 	startTime := time.Now()
@@ -149,6 +214,8 @@ func (d *SyncDaemon) runSync(opts SyncOptions, reason string) {
 }
 
 func (d *SyncDaemon) TriggerManualSync() bool {
+	d.NotifyConfigured()
+
 	d.mu.Lock()
 	if d.isSyncing {
 		d.mu.Unlock()
@@ -868,8 +935,8 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 
 	log.Println("[Server] Strava authorization successful! Configured .talus-config.json")
 
-	// Trigger daemon start now that credentials exist
-	daemon.Start()
+	// Trigger daemon start or wake up background loop now that credentials exist
+	daemon.NotifyConfigured()
 
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
