@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -47,6 +48,14 @@ type SegmentEffort struct {
 	EndIndex         int            `json:"end_index"`
 }
 
+// GearInfo represents equipment details attached to an activity.
+type GearInfo struct {
+	ID       string  `json:"id"`
+	Name     string  `json:"name"`
+	Primary  bool    `json:"primary"`
+	Distance float64 `json:"distance"`
+}
+
 // ActivityDetail represents the loaded JSON format for activities.
 type ActivityDetail struct {
 	ID                 int64                 `json:"id"`
@@ -63,9 +72,45 @@ type ActivityDetail struct {
 	AverageCadence     float64               `json:"average_cadence"`
 	AverageSpeed       float64               `json:"average_speed"`
 	GearID             string                `json:"gear_id"`
+	Gear               *GearInfo             `json:"gear"`
 	Map                MapInfo               `json:"map"`
 	Streams            map[string]StreamInfo `json:"streams"`
 	SegmentEfforts     []SegmentEffort       `json:"segment_efforts"`
+}
+
+// IsShoeRelevant returns true if the activity is a foot-based sport (e.g. running, walking, hiking)
+// or if the attached gear ID represents a shoe.
+func IsShoeRelevant(act *ActivityDetail) bool {
+	if act == nil {
+		return false
+	}
+	if strings.HasPrefix(act.GearID, "g") || (act.Gear != nil && strings.HasPrefix(act.Gear.ID, "g")) {
+		return true
+	}
+	sport := strings.ToLower(act.SportType)
+	if sport == "" {
+		sport = strings.ToLower(act.Type)
+	}
+	switch sport {
+	case "run", "trailrun", "walk", "hike", "virtualrun":
+		return true
+	default:
+		return false
+	}
+}
+
+// ShoeName returns the name of the shoe used for the activity, if relevant and available.
+func (act *ActivityDetail) ShoeName() string {
+	if !IsShoeRelevant(act) {
+		return ""
+	}
+	if act.Gear != nil && act.Gear.Name != "" {
+		return act.Gear.Name
+	}
+	if act.GearID != "" {
+		return act.GearID
+	}
+	return ""
 }
 
 // IsRunActivity returns true if the activity is a Run or TrailRun.

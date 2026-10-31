@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -326,6 +327,17 @@ func TestServer_PagesAndAPIs(t *testing.T) {
 		t.Errorf("handleProgressPage missing expected title in body")
 	}
 
+	// Test 2b: Activities page
+	req = httptest.NewRequest(http.MethodGet, "/activities", nil)
+	w = httptest.NewRecorder()
+	handleActivitiesPage(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("handleActivitiesPage returned status %d, expected %d", w.Code, http.StatusOK)
+	}
+	if !strings.Contains(w.Body.String(), "Activities - talus") {
+		t.Errorf("handleActivitiesPage missing expected title in body")
+	}
+
 	// Test 3: Stats API
 	req = httptest.NewRequest(http.MethodGet, "/api/stats?period=month&sport=run&unit=km", nil)
 	w = httptest.NewRecorder()
@@ -476,5 +488,176 @@ func TestSyncDaemon_PanicRecovery(t *testing.T) {
 	}
 	if d.lastSyncErr == "" {
 		t.Errorf("expected lastSyncErr to be recorded")
+	}
+}
+
+func TestServer_ActivitiesPageAndAPI(t *testing.T) {
+	// 1. Test unconfigured redirect
+	unconfiguredDir, err := os.MkdirTemp("", "talus-act-unconfig-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(unconfiguredDir)
+
+	daemon = newSyncDaemon(unconfiguredDir, 1*time.Hour, 24*time.Hour, true)
+	reqUncfg := httptest.NewRequest(http.MethodGet, "/activities", nil)
+	wUncfg := httptest.NewRecorder()
+	handleActivitiesPage(wUncfg, reqUncfg)
+	if wUncfg.Code != http.StatusSeeOther {
+		t.Fatalf("expected redirect 303 when unconfigured, got %d", wUncfg.Code)
+	}
+
+	// 2. Test configured with 12 activities
+	tmpDir, err := os.MkdirTemp("", "talus-act-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	activitiesDir := filepath.Join(tmpDir, "activities")
+	_ = os.MkdirAll(activitiesDir, 0755)
+
+	cfg := &Config{ClientID: "id", ClientSecret: "secret", AccessToken: "tok", ExpiresAt: time.Now().Add(time.Hour)}
+	_ = SaveConfig(tmpDir, cfg)
+
+	baseTime := time.Date(2026, 4, 1, 8, 0, 0, 0, time.UTC)
+	for i := 1; i <= 12; i++ {
+		act := ActivityDetail{
+			ID:                 int64(2000 + i),
+			Name:               fmt.Sprintf("Activity %d", i),
+			Type:               "Run",
+			SportType:          "Run",
+			StartDate:          baseTime.Add(time.Duration(i) * 24 * time.Hour),
+			Distance:           float64(5000 + i*500),
+			MovingTime:         1500 + i*60,
+			ElapsedTime:        1600 + i*60,
+			TotalElevationGain: float64(50 + i*10),
+		}
+
+		if i == 1 {
+			// Oldest: has shoe gear object
+			act.Gear = &GearInfo{ID: "g100", Name: "Saucony Endorphin Speed"}
+			act.GearID = "g100"
+		} else if i == 2 {
+			// Has only gear_id
+			act.GearID = "g200"
+		} else if i == 3 {
+			// Cycling: shoe should not be relevant
+			act.Type = "Ride"
+			act.SportType = "Ride"
+			act.GearID = "b500"
+		} else if i == 4 {
+			// Trail run with shoe
+			act.SportType = "TrailRun"
+			act.Gear = &GearInfo{ID: "g300", Name: "Hoka Speedgoat 5"}
+		}
+		// Others: runs with no shoe specified
+
+		data, _ := json.Marshal(act)
+		_ = os.WriteFile(filepath.Join(activitiesDir, fmt.Sprintf("%d.json", act.ID)), data, 0644)
+	}
+
+	daemon = newSyncDaemon(tmpDir, 1*time.Hour, 24*time.Hour, true)
+
+	// Test page render
+	reqPage := httptest.NewRequest(http.MethodGet, "/activities", nil)
+	wPage := httptest.NewRecorder()
+	handleActivitiesPage(wPage, reqPage)
+	if wPage.Code != http.StatusOK {
+		t.Fatalf("handleActivitiesPage returned %d, expected 200", wPage.Code)
+	}
+	body := wPage.Body.String()
+	if !strings.Contains(body, "Activities - talus") {
+		t.Errorf("Activities page missing expected title")
+	}
+	if !strings.Contains(body, "Shoe Used") {
+		t.Errorf("Activities page missing Shoe Used column")
+	}
+
+	// Test API with default limit (should return 10 newest out of 12)
+	reqAPI := httptest.NewRequest(http.MethodGet, "/api/activities", nil)
+	wAPI := httptest.NewRecorder()
+	handleActivitiesAPI(wAPI, reqAPI)
+	if wAPI.Code != http.StatusOK {
+		t.Fatalf("handleActivitiesAPI returned %d, expected 200", wAPI.Code)
+	}
+
+	var resp ActivitiesResponseJSON
+	if err := json.Unmarshal(wAPI.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to unmarshal API response: %v", err)
+	}
+
+	if resp.Total != 12 {
+		t.Errorf("expected total 12, got %d", resp.Total)
+	}
+	if len(resp.Activities) != 10 {
+		t.Fatalf("expected 10 activities returned, got %d", len(resp.Activities))
+	}
+
+	// Verify order: newest first (Activity 12 should be first, Activity 3 should be last in top 10)
+	if resp.Activities[0].ID != 2012 {
+		t.Errorf("expected first activity to be ID 2012 (newest), got %d", resp.Activities[0].ID)
+	}
+	if resp.Activities[9].ID != 2003 {
+		t.Errorf("expected 10th activity to be ID 2003, got %d", resp.Activities[9].ID)
+	}
+
+	// Check Activity 3 (Cycling ride): shoe not relevant
+	act3Item := resp.Activities[9]
+	if act3Item.ShoeRelevant {
+		t.Errorf("expected ShoeRelevant to be false for cycling ride")
+	}
+	if act3Item.SportType != "Ride" {
+		t.Errorf("expected SportType 'Ride', got %s", act3Item.SportType)
+	}
+
+	// Check custom limit: limit=3
+	reqLimit := httptest.NewRequest(http.MethodGet, "/api/activities?limit=3", nil)
+	wLimit := httptest.NewRecorder()
+	handleActivitiesAPI(wLimit, reqLimit)
+	var respLimit ActivitiesResponseJSON
+	_ = json.Unmarshal(wLimit.Body.Bytes(), &respLimit)
+	if len(respLimit.Activities) != 3 {
+		t.Errorf("expected 3 activities with limit=3, got %d", len(respLimit.Activities))
+	}
+
+	// Check limit=12 with unit=mi
+	reqMi := httptest.NewRequest(http.MethodGet, "/api/activities?limit=12&unit=mi", nil)
+	wMi := httptest.NewRecorder()
+	handleActivitiesAPI(wMi, reqMi)
+	var respMi ActivitiesResponseJSON
+	_ = json.Unmarshal(wMi.Body.Bytes(), &respMi)
+	if respMi.Unit != "mi" {
+		t.Errorf("expected unit mi, got %s", respMi.Unit)
+	}
+
+	// Activity 1 is last (12th item in respMi)
+	act1Item := respMi.Activities[11]
+	if act1Item.ID != 2001 {
+		t.Errorf("expected 12th item to be ID 2001, got %d", act1Item.ID)
+	}
+	if !act1Item.ShoeRelevant {
+		t.Errorf("expected ShoeRelevant to be true for run")
+	}
+	if act1Item.Shoe != "Saucony Endorphin Speed" {
+		t.Errorf("expected shoe 'Saucony Endorphin Speed', got %q", act1Item.Shoe)
+	}
+	if !strings.HasSuffix(act1Item.DistanceFmt, "mi") {
+		t.Errorf("expected distance in mi, got %s", act1Item.DistanceFmt)
+	}
+	if !strings.HasSuffix(act1Item.ElevationFmt, "ft") {
+		t.Errorf("expected elevation in ft, got %s", act1Item.ElevationFmt)
+	}
+
+	// Activity 4 is TrailRun with shoe "Hoka Speedgoat 5"
+	act4Item := respMi.Activities[8]
+	if act4Item.ID != 2004 {
+		t.Errorf("expected item to be ID 2004, got %d", act4Item.ID)
+	}
+	if act4Item.SportType != "Trail Run" {
+		t.Errorf("expected sport type 'Trail Run', got %q", act4Item.SportType)
+	}
+	if act4Item.Shoe != "Hoka Speedgoat 5" {
+		t.Errorf("expected shoe 'Hoka Speedgoat 5', got %q", act4Item.Shoe)
 	}
 }

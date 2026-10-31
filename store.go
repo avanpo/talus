@@ -600,3 +600,28 @@ func (s *ActivityStore) GetAvailableYears() ([]int, error) {
 
 	return s.years, nil
 }
+
+// GetRecentActivities returns the most recent N activities sorted newest first, along with the total count.
+func (s *ActivityStore) GetRecentActivities(limit int) ([]*ActivityDetail, int, error) {
+	if err := s.ReloadIfNeeded(); err != nil {
+		return nil, 0, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	total := len(s.activities)
+	if total == 0 {
+		return nil, 0, nil
+	}
+
+	if limit <= 0 || limit > total {
+		limit = total
+	}
+
+	res := make([]*ActivityDetail, limit)
+	for i := 0; i < limit; i++ {
+		res[i] = s.activities[total-1-i]
+	}
+	return res, total, nil
+}

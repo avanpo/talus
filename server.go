@@ -976,6 +976,15 @@ func handleVolumePage(w http.ResponseWriter, r *http.Request) {
 	serveHTMLFile(w, "web/index.html")
 }
 
+func handleActivitiesPage(w http.ResponseWriter, r *http.Request) {
+	if !isConfigured(daemon.dir) {
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
+
+	serveHTMLFile(w, "web/activities.html")
+}
+
 func handleProgressPage(w http.ResponseWriter, r *http.Request) {
 	if !isConfigured(daemon.dir) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
@@ -983,6 +992,169 @@ func handleProgressPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serveHTMLFile(w, "web/progress.html")
+}
+
+type ActivityItemJSON struct {
+	ID             int64   `json:"id"`
+	Name           string  `json:"name"`
+	Type           string  `json:"type"`
+	SportType      string  `json:"sport_type"`
+	StartDate      string  `json:"start_date"`
+	StartDateFmt   string  `json:"start_date_fmt"`
+	Distance       float64 `json:"distance"`
+	DistanceFmt    string  `json:"distance_fmt"`
+	Elevation      float64 `json:"elevation"`
+	ElevationFmt   string  `json:"elevation_fmt"`
+	ElapsedTime    int     `json:"elapsed_time"`
+	ElapsedTimeFmt string  `json:"elapsed_time_fmt"`
+	MovingTime     int     `json:"moving_time"`
+	MovingTimeFmt  string  `json:"moving_time_fmt"`
+	Shoe           string  `json:"shoe"`
+	ShoeRelevant   bool    `json:"shoe_relevant"`
+}
+
+type ActivitiesResponseJSON struct {
+	Unit       string             `json:"unit"`
+	Activities []ActivityItemJSON `json:"activities"`
+	Total      int                `json:"total"`
+}
+
+func formatSportType(sportType, actType string) string {
+	st := sportType
+	if st == "" {
+		st = actType
+	}
+	if st == "" {
+		return "Activity"
+	}
+	switch st {
+	case "TrailRun":
+		return "Trail Run"
+	case "VirtualRun":
+		return "Virtual Run"
+	case "MountainBikeRide":
+		return "Mountain Bike"
+	case "GravelRide":
+		return "Gravel Ride"
+	case "EBikeRide":
+		return "E-Bike Ride"
+	case "VirtualRide":
+		return "Virtual Ride"
+	case "BackcountrySki":
+		return "Backcountry Ski"
+	case "NordicSki":
+		return "Nordic Ski"
+	case "AlpineSki":
+		return "Alpine Ski"
+	case "WeightTraining":
+		return "Weight Training"
+	default:
+		var sb strings.Builder
+		for i, r := range st {
+			if i > 0 && r >= 'A' && r <= 'Z' {
+				sb.WriteRune(' ')
+			}
+			sb.WriteRune(r)
+		}
+		return sb.String()
+	}
+}
+
+func formatDurationExact(secs int) string {
+	if secs <= 0 {
+		return "0s"
+	}
+	h := secs / 3600
+	m := (secs % 3600) / 60
+	s := secs % 60
+	if h > 0 {
+		if s > 0 {
+			return fmt.Sprintf("%dh %02dm %02ds", h, m, s)
+		}
+		return fmt.Sprintf("%dh %02dm", h, m)
+	}
+	if s > 0 {
+		return fmt.Sprintf("%dm %02ds", m, s)
+	}
+	return fmt.Sprintf("%dm", m)
+}
+
+func handleActivitiesAPI(w http.ResponseWriter, r *http.Request) {
+	limit := 10
+	if lStr := r.URL.Query().Get("limit"); lStr != "" {
+		if l, err := strconv.Atoi(lStr); err == nil && l > 0 {
+			limit = l
+		}
+	}
+
+	unit := r.URL.Query().Get("unit")
+	if unit == "" {
+		unit = getSystemUnit()
+	}
+
+	store := GetGlobalStore(daemon.dir)
+	activities, total, err := store.GetRecentActivities(limit)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error retrieving activities: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	items := make([]ActivityItemJSON, 0, len(activities))
+	for _, act := range activities {
+		var dist float64
+		var distFmt string
+		var elev float64
+		var elevFmt string
+
+		if unit == "mi" {
+			dist = act.Distance / 1609.344
+			distFmt = fmt.Sprintf("%.2f mi", dist)
+			elev = act.TotalElevationGain * 3.28084
+			elevFmt = fmt.Sprintf("%s ft", formatComma(int(math.Round(elev))))
+		} else {
+			dist = act.Distance / 1000.0
+			distFmt = fmt.Sprintf("%.2f km", dist)
+			elev = act.TotalElevationGain
+			elevFmt = fmt.Sprintf("%s m", formatComma(int(math.Round(elev))))
+		}
+
+		elapsedSecs := act.ElapsedTime
+		if elapsedSecs == 0 {
+			elapsedSecs = act.MovingTime
+		}
+
+		sportName := formatSportType(act.SportType, act.Type)
+		shoeRel := IsShoeRelevant(act)
+		shoeName := act.ShoeName()
+
+		items = append(items, ActivityItemJSON{
+			ID:             act.ID,
+			Name:           act.Name,
+			Type:           act.Type,
+			SportType:      sportName,
+			StartDate:      act.StartDate.Format(time.RFC3339),
+			StartDateFmt:   act.StartDate.Format("Jan 02, 2006"),
+			Distance:       math.Round(dist*100) / 100,
+			DistanceFmt:    distFmt,
+			Elevation:      math.Round(elev),
+			ElevationFmt:   elevFmt,
+			ElapsedTime:    elapsedSecs,
+			ElapsedTimeFmt: formatDurationExact(elapsedSecs),
+			MovingTime:     act.MovingTime,
+			MovingTimeFmt:  formatDurationShort(act.MovingTime),
+			Shoe:           shoeName,
+			ShoeRelevant:   shoeRel,
+		})
+	}
+
+	resp := ActivitiesResponseJSON{
+		Unit:       unit,
+		Activities: items,
+		Total:      total,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // StartWebServer starts the HTTP server and sync daemon.
@@ -996,9 +1168,11 @@ func StartWebServer(dir string, port int, syncInterval, checkUpdatesInterval tim
 	mux.HandleFunc("/setup/auth", handleSetupAuth)
 	mux.HandleFunc("/callback", handleOAuthCallback)
 	mux.HandleFunc("/", handleVolumePage)
+	mux.HandleFunc("/activities", handleActivitiesPage)
 	mux.HandleFunc("/progress", handleProgressPage)
 	mux.HandleFunc("/api/stats", handleStatsAPI)
 	mux.HandleFunc("/api/progress", handleProgressAPI)
+	mux.HandleFunc("/api/activities", handleActivitiesAPI)
 	mux.HandleFunc("/api/status", handleStatusAPI)
 	mux.HandleFunc("/api/sync", handleTriggerSyncAPI)
 
