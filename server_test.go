@@ -660,4 +660,73 @@ func TestServer_ActivitiesPageAndAPI(t *testing.T) {
 	if act4Item.Shoe != "Hoka Speedgoat 5" {
 		t.Errorf("expected shoe 'Hoka Speedgoat 5', got %q", act4Item.Shoe)
 	}
+
+	// Check sport filtering on activities API
+	reqRide := httptest.NewRequest(http.MethodGet, "/api/activities?sport=ride", nil)
+	wRide := httptest.NewRecorder()
+	handleActivitiesAPI(wRide, reqRide)
+	var respRide ActivitiesResponseJSON
+	_ = json.Unmarshal(wRide.Body.Bytes(), &respRide)
+	if respRide.Total != 1 || len(respRide.Activities) != 1 {
+		t.Errorf("expected 1 ride activity, got total=%d len=%d", respRide.Total, len(respRide.Activities))
+	}
+	if len(respRide.Activities) > 0 && respRide.Activities[0].ID != 2003 {
+		t.Errorf("expected ride activity ID 2003, got %d", respRide.Activities[0].ID)
+	}
+
+	reqTrail := httptest.NewRequest(http.MethodGet, "/api/activities?sport=trail", nil)
+	wTrail := httptest.NewRecorder()
+	handleActivitiesAPI(wTrail, reqTrail)
+	var respTrail ActivitiesResponseJSON
+	_ = json.Unmarshal(wTrail.Body.Bytes(), &respTrail)
+	if respTrail.Total != 1 || len(respTrail.Activities) != 1 {
+		t.Errorf("expected 1 trail activity, got total=%d len=%d", respTrail.Total, len(respTrail.Activities))
+	}
+
+	reqRun := httptest.NewRequest(http.MethodGet, "/api/activities?sport=run&limit=20", nil)
+	wRun := httptest.NewRecorder()
+	handleActivitiesAPI(wRun, reqRun)
+	var respRun ActivitiesResponseJSON
+	_ = json.Unmarshal(wRun.Body.Bytes(), &respRun)
+	if respRun.Total != 11 || len(respRun.Activities) != 11 {
+		t.Errorf("expected 11 run activities, got total=%d len=%d", respRun.Total, len(respRun.Activities))
+	}
+
+	// Check limits 20 and 50
+	req50 := httptest.NewRequest(http.MethodGet, "/api/activities?limit=50", nil)
+	w50 := httptest.NewRecorder()
+	handleActivitiesAPI(w50, req50)
+	var resp50 ActivitiesResponseJSON
+	_ = json.Unmarshal(w50.Body.Bytes(), &resp50)
+	if resp50.Total != 12 || len(resp50.Activities) != 12 {
+		t.Errorf("expected 12 total activities with limit=50, got total=%d len=%d", resp50.Total, len(resp50.Activities))
+	}
+
+	// Test Progress API year filter
+	reqProgAll := httptest.NewRequest(http.MethodGet, "/api/progress?sport=running", nil)
+	wProgAll := httptest.NewRecorder()
+	handleProgressAPI(wProgAll, reqProgAll)
+	var respProgAll ProgressResponse
+	_ = json.Unmarshal(wProgAll.Body.Bytes(), &respProgAll)
+	if len(respProgAll.Years) == 0 {
+		t.Errorf("expected ProgressResponse to have available years, got none")
+	}
+
+	reqProg2026 := httptest.NewRequest(http.MethodGet, "/api/progress?sport=running&year=2026", nil)
+	wProg2026 := httptest.NewRecorder()
+	handleProgressAPI(wProg2026, reqProg2026)
+	var respProg2026 ProgressResponse
+	_ = json.Unmarshal(wProg2026.Body.Bytes(), &respProg2026)
+	if wProg2026.Code != http.StatusOK {
+		t.Errorf("expected status 200 for year=2026, got %d", wProg2026.Code)
+	}
+
+	reqProgEmptyYear := httptest.NewRequest(http.MethodGet, "/api/progress?sport=running&year=2015", nil)
+	wProgEmptyYear := httptest.NewRecorder()
+	handleProgressAPI(wProgEmptyYear, reqProgEmptyYear)
+	var respProgEmptyYear ProgressResponse
+	_ = json.Unmarshal(wProgEmptyYear.Body.Bytes(), &respProgEmptyYear)
+	if len(respProgEmptyYear.Runs) != 0 {
+		t.Errorf("expected 0 runs for empty year 2015, got %d", len(respProgEmptyYear.Runs))
+	}
 }

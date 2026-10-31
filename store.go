@@ -601,8 +601,9 @@ func (s *ActivityStore) GetAvailableYears() ([]int, error) {
 	return s.years, nil
 }
 
-// GetRecentActivities returns the most recent N activities sorted newest first, along with the total count.
-func (s *ActivityStore) GetRecentActivities(limit int) ([]*ActivityDetail, int, error) {
+// GetRecentActivities returns the most recent N activities matching the sport filter,
+// sorted newest first, along with the total count of matching activities.
+func (s *ActivityStore) GetRecentActivities(limit int, sport string) ([]*ActivityDetail, int, error) {
 	if err := s.ReloadIfNeeded(); err != nil {
 		return nil, 0, err
 	}
@@ -615,13 +616,22 @@ func (s *ActivityStore) GetRecentActivities(limit int) ([]*ActivityDetail, int, 
 		return nil, 0, nil
 	}
 
-	if limit <= 0 || limit > total {
-		limit = total
+	if limit <= 0 {
+		limit = 10
 	}
 
-	res := make([]*ActivityDetail, limit)
-	for i := 0; i < limit; i++ {
-		res[i] = s.activities[total-1-i]
+	matchedTotal := 0
+	var res []*ActivityDetail
+
+	for i := total - 1; i >= 0; i-- {
+		act := s.activities[i]
+		if MatchesSportFilter(act, sport) {
+			matchedTotal++
+			if len(res) < limit {
+				res = append(res, act)
+			}
+		}
 	}
-	return res, total, nil
+
+	return res, matchedTotal, nil
 }

@@ -184,6 +184,49 @@
             margin-top: 0.25rem;
         }
 
+        .controls-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1rem 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+            box-shadow: var(--shadow);
+            margin-bottom: 1.5rem;
+        }
+
+        .controls-group {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            flex-wrap: wrap;
+        }
+
+        .controls-label {
+            font-size: 0.82rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-main);
+        }
+
+        .select-input {
+            background-color: var(--bg-card);
+            color: var(--text-main);
+            border: 1px solid var(--border);
+            padding: 0.45rem 0.85rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            outline: none;
+            cursor: pointer;
+            transition: border-color 0.15s;
+        }
+        .select-input:focus { border-color: var(--primary); }
+
         .table-card {
             background-color: var(--bg-card);
             border: 1px solid var(--border);
@@ -334,11 +377,39 @@
             </div>
         </div>
 
+        <div class="controls-card">
+            <div class="controls-group">
+                <span class="controls-label">Activity Type:</span>
+                <select class="select-input" id="sportSelect" onchange="loadActivities()">
+                    <option value="all" selected>All Activities</option>
+                    <option value="cardio">All Cardio</option>
+                    <option value="run">All Running</option>
+                    <option value="trail">Trail Running</option>
+                    <option value="road">Road Running</option>
+                    <option value="treadmill">Treadmill Running</option>
+                    <option value="hike">Hiking &amp; Walking</option>
+                    <option value="ride">All Cycling</option>
+                    <option value="gravel">Gravel Cycling</option>
+                    <option value="mtb">Mountain Biking</option>
+                    <option value="virtual_ride">Virtual Cycling</option>
+                    <option value="ski_tour">Backcountry Skiing</option>
+                </select>
+            </div>
+            <div class="controls-group">
+                <span class="controls-label">Show:</span>
+                <select class="select-input" id="limitSelect" onchange="loadActivities()">
+                    <option value="10" selected>10 activities</option>
+                    <option value="20">20 activities</option>
+                    <option value="50">50 activities</option>
+                </select>
+            </div>
+        </div>
+
         <div class="table-card">
             <div class="table-card-header">
                 <div class="table-card-title">
                     <span>Recent Activities</span>
-                    <span class="badge badge-gray" id="activityCountBadge">Last 10</span>
+                    <span class="badge badge-gray" id="activityCountBadge">Loading...</span>
                 </div>
             </div>
             <div class="table-responsive">
@@ -456,8 +527,11 @@
 
         async function loadActivities() {
             const tbody = document.getElementById('activitiesTableBody');
+            const sport = document.getElementById('sportSelect') ? document.getElementById('sportSelect').value : 'all';
+            const limit = document.getElementById('limitSelect') ? document.getElementById('limitSelect').value : '10';
+
             try {
-                const res = await fetch('/api/activities?limit=10');
+                const res = await fetch(`/api/activities?limit=${limit}&sport=${sport}`);
                 if (!res.ok) throw new Error('API error ' + res.status);
                 const data = await res.json();
 
@@ -466,14 +540,15 @@
                     tbody.innerHTML = `
                         <tr>
                             <td colspan="7" style="text-align:center; padding: 2.5rem; color:var(--text-dim);">
-                                No activities found in backup directory.
+                                No matching activities found.
                             </td>
                         </tr>
                     `;
+                    document.getElementById('activityCountBadge').textContent = `0 of ${data.total || 0}`;
                     return;
                 }
 
-                document.getElementById('activityCountBadge').textContent = `Last ${activities.length} of ${data.total || activities.length}`;
+                document.getElementById('activityCountBadge').textContent = `Showing ${activities.length} of ${data.total || activities.length}`;
 
                 let html = '';
                 activities.forEach(act => {

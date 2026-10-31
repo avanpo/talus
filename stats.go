@@ -140,6 +140,62 @@ func IsSkiTour(act *ActivityDetail) bool {
 		st == "rollerski" || t == "rollerski"
 }
 
+// MatchesSportFilter checks if an activity matches the requested sport filter string.
+func MatchesSportFilter(act *ActivityDetail, sport string) bool {
+	if act == nil {
+		return false
+	}
+	s := strings.ToLower(strings.TrimSpace(sport))
+	if s == "" || s == "all" || s == "all_sports" {
+		return true
+	}
+
+	isRun := IsRunActivity(act)
+	isTrail := isRun && IsTrailRun(act)
+	isTreadmill := isRun && IsTreadmillRun(act)
+	isRoad := isRun && !isTrail && !isTreadmill
+
+	isRide := IsRideActivity(act)
+	isGravel := isRide && IsGravelRide(act)
+	isMTB := isRide && IsMTBRide(act)
+	isVirtualRide := isRide && IsVirtualRide(act)
+
+	isSkiTour := IsSkiTour(act)
+	isHike := act.Type == "Hike" || act.SportType == "Hike"
+	isWalk := act.Type == "Walk" || act.SportType == "Walk"
+
+	switch s {
+	case "cardio", "all_cardio":
+		return isRun || isHike || isWalk || isRide || isSkiTour
+	case "run", "running":
+		return isRun
+	case "trail":
+		return isTrail
+	case "road":
+		return isRoad
+	case "treadmill":
+		return isTreadmill
+	case "ride", "bike", "cycling":
+		return isRide
+	case "gravel":
+		return isGravel
+	case "mtb":
+		return isMTB
+	case "virtual_ride":
+		return isVirtualRide
+	case "ski_tour", "ski", "skiing":
+		return isSkiTour
+	case "hike":
+		return isHike || isWalk
+	case "walk":
+		return isWalk
+	default:
+		actSport := strings.ToLower(act.SportType)
+		actType := strings.ToLower(act.Type)
+		return actSport == s || actType == s
+	}
+}
+
 // CalculatePeriodicStats reads activity data (using cache) and computes periodic summary statistics.
 func CalculatePeriodicStats(dir string, opts StatsOptions) ([]*PeriodStats, *PeriodStats, error) {
 	store := GetGlobalStore(dir)

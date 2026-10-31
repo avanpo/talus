@@ -368,6 +368,7 @@ type ProgressResponse struct {
 	Segments []ProgressSegmentJSON `json:"segments"`
 	Clusters []ProgressClusterJSON `json:"clusters"`
 	Unit     string                `json:"unit"`
+	Years    []int                 `json:"years,omitempty"`
 }
 
 type DaemonStatusJSON struct {
@@ -552,6 +553,13 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 		unit = getSystemUnit()
 	}
 
+	year := 0
+	if yStr := r.URL.Query().Get("year"); yStr != "" {
+		if y, err := strconv.Atoi(yStr); err == nil && y > 0 {
+			year = y
+		}
+	}
+
 	sport := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sport")))
 	if sport == "" || sport == "run" || sport == "running" {
 		sport = "running"
@@ -577,6 +585,9 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Error calculating progress: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	store := GetGlobalStore(daemon.dir)
+	availableYears, _ := store.GetAvailableYears()
 
 	formatRun := func(r *RunStats) ProgressRunJSON {
 		dist := r.Activity.Distance * distMult
@@ -650,6 +661,9 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 		if sport != "all" && run.Sport != sport {
 			continue
 		}
+		if year > 0 && run.Activity.StartDate.Year() != year {
+			continue
+		}
 		runsJSON = append(runsJSON, formatRun(run))
 	}
 
@@ -660,6 +674,9 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		var effortsJSON []ProgressSegmentEffortJSON
 		for _, eff := range seg.Efforts {
+			if year > 0 && eff.StartDate.Year() != year {
+				continue
+			}
 			effDist := eff.Distance * distMult
 			rawPaceStr := "-"
 			if eff.AvgPaceMinKm > 0 {
@@ -710,20 +727,44 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
+		if len(effortsJSON) == 0 {
+			continue
+		}
+
 		bestRawPaceStr := "-"
-		if seg.BestPaceMinKm > 0 {
-			if unit == "mi" {
-				bestRawPaceStr = formatPace(seg.BestPaceMinKm*1.609344) + paceUnit
-			} else {
-				bestRawPaceStr = formatPace(seg.BestPaceMinKm) + paceUnit
+		bestAdjPaceStr := "-"
+		bestEF := 0.0
+		bestAdjustedEF := 0.0
+		var bestRawPaceMinKm float64
+		var bestAdjPaceMinKm float64
+
+		for _, eff := range effortsJSON {
+			if eff.AvgPaceMinKm > 0 && (bestRawPaceMinKm == 0 || eff.AvgPaceMinKm < bestRawPaceMinKm) {
+				bestRawPaceMinKm = eff.AvgPaceMinKm
+			}
+			if eff.AdjustedPaceMinKm > 0 && (bestAdjPaceMinKm == 0 || eff.AdjustedPaceMinKm < bestAdjPaceMinKm) {
+				bestAdjPaceMinKm = eff.AdjustedPaceMinKm
+			}
+			if eff.EF > bestEF {
+				bestEF = eff.EF
+			}
+			if eff.AdjustedEF > bestAdjustedEF {
+				bestAdjustedEF = eff.AdjustedEF
 			}
 		}
-		bestAdjPaceStr := "-"
-		if seg.BestAdjustedPace > 0 {
+
+		if bestRawPaceMinKm > 0 {
 			if unit == "mi" {
-				bestAdjPaceStr = formatPace(seg.BestAdjustedPace*1.609344) + paceUnit
+				bestRawPaceStr = formatPace(bestRawPaceMinKm*1.609344) + paceUnit
 			} else {
-				bestAdjPaceStr = formatPace(seg.BestAdjustedPace) + paceUnit
+				bestRawPaceStr = formatPace(bestRawPaceMinKm) + paceUnit
+			}
+		}
+		if bestAdjPaceMinKm > 0 {
+			if unit == "mi" {
+				bestAdjPaceStr = formatPace(bestAdjPaceMinKm*1.609344) + paceUnit
+			} else {
+				bestAdjPaceStr = formatPace(bestAdjPaceMinKm) + paceUnit
 			}
 		}
 
@@ -735,11 +776,11 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 			AverageGrade:     math.Round(seg.AverageGrade*10) / 10,
 			ClimbCategory:    seg.ClimbCategory,
 			City:             seg.City,
-			EffortCount:      seg.EffortCount,
+			EffortCount:      len(effortsJSON),
 			BestPace:         bestRawPaceStr,
 			BestAdjustedPace: bestAdjPaceStr,
-			BestEF:           math.Round(seg.BestEF*1000) / 1000,
-			BestAdjustedEF:   math.Round(seg.BestAdjustedEF*1000) / 1000,
+			BestEF:           math.Round(bestEF*1000) / 1000,
+			BestAdjustedEF:   math.Round(bestAdjustedEF*1000) / 1000,
 			Efforts:          effortsJSON,
 		})
 	}
@@ -749,16 +790,19 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 		if sport != "all" && cluster.Sport != sport {
 			continue
 		}
-		if len(cluster.Runs) < 2 {
-			continue
-		}
 		var clusterRunsJSON []ProgressRunJSON
 		for _, cr := range cluster.Runs {
+			if year > 0 && cr.Activity.StartDate.Year() != year {
+				continue
+			}
 			clusterRunsJSON = append(clusterRunsJSON, formatRun(cr))
 		}
+		if len(clusterRunsJSON) < 1 {
+			continue
+		}
 
-		firstRun := cluster.Runs[0]
-		lastRun := cluster.Runs[len(cluster.Runs)-1]
+		firstRun := clusterRunsJSON[0]
+		lastRun := clusterRunsJSON[len(clusterRunsJSON)-1]
 		efDiff := lastRun.EF - firstRun.EF
 		efImprovementPct := 0.0
 		if firstRun.EF > 0 {
@@ -770,7 +814,7 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 			RouteName:        cluster.RouteName,
 			Sport:            cluster.Sport,
 			Distance:         math.Round(cluster.Distance*distMult*10) / 10,
-			RunCount:         len(cluster.Runs),
+			RunCount:         len(clusterRunsJSON),
 			EFImprovementPct: efImprovementPct,
 			Runs:             clusterRunsJSON,
 		})
@@ -782,6 +826,7 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 		Segments: segmentsJSON,
 		Clusters: clustersJSON,
 		Unit:     unit,
+		Years:    availableYears,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1087,13 +1132,15 @@ func handleActivitiesAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	sport := r.URL.Query().Get("sport")
+
 	unit := r.URL.Query().Get("unit")
 	if unit == "" {
 		unit = getSystemUnit()
 	}
 
 	store := GetGlobalStore(daemon.dir)
-	activities, total, err := store.GetRecentActivities(limit)
+	activities, total, err := store.GetRecentActivities(limit, sport)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error retrieving activities: %v", err), http.StatusInternalServerError)
 		return

@@ -518,6 +518,12 @@
                     <option value="skiing">Backcountry Skiing</option>
                 </select>
             </div>
+            <div class="controls-group">
+                <span class="controls-label" style="font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; font-size: 0.8rem; color: var(--text-main);">Year:</span>
+                <select id="yearSelect" class="select-input" onchange="onYearChange()" style="font-size: 0.95rem; font-weight: 600; padding: 0.55rem 1.1rem; min-width: 140px;">
+                    <option value="0" selected>All Years</option>
+                </select>
+            </div>
             <div style="font-size: 0.85rem; color: var(--text-muted);" id="sportDescription">
                 Aggregated road &amp; trail running telemetry and segments
             </div>
@@ -697,6 +703,8 @@
 
     <script>
         let currentSport = 'running';
+        let currentYear = '0';
+        let initialYearsLoaded = false;
         let progressData = null;
         let selectedSegment = null;
         let segmentChartInstance = null;
@@ -713,6 +721,11 @@
             } else if (currentSport === 'skiing') {
                 desc.textContent = 'Backcountry ski touring, skinning & skimo telemetry';
             }
+            loadProgress();
+        }
+
+        function onYearChange() {
+            currentYear = document.getElementById('yearSelect').value;
             loadProgress();
         }
 
@@ -758,9 +771,19 @@
 
         async function loadProgress() {
             try {
-                const res = await fetch(`/api/progress?sport=${currentSport}`);
+                const year = currentYear || '0';
+                const res = await fetch(`/api/progress?sport=${currentSport}&year=${year}`);
                 if (!res.ok) throw new Error('API error');
                 progressData = await res.json();
+
+                if (!initialYearsLoaded && progressData.years && progressData.years.length > 0) {
+                    const select = document.getElementById('yearSelect');
+                    const currVal = select.value;
+                    select.innerHTML = '<option value="0">All Years</option>' + 
+                        progressData.years.map(y => `<option value="${y}">${y}</option>`).join('');
+                    select.value = currVal;
+                    initialYearsLoaded = true;
+                }
 
                 initSegmentSelector();
                 renderMacroEFChart();
