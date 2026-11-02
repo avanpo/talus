@@ -1125,14 +1125,26 @@ func formatDurationExact(secs int) string {
 }
 
 func handleActivitiesAPI(w http.ResponseWriter, r *http.Request) {
+	// If id is provided, serve the full activity detail
+	if idStr := r.URL.Query().Get("id"); idStr != "" {
+		handleActivityDetailAPI(w, r)
+		return
+	}
+
 	limit := 10
 	if lStr := r.URL.Query().Get("limit"); lStr != "" {
-		if l, err := strconv.Atoi(lStr); err == nil && l > 0 {
+		if lStr == "all" {
+			limit = 0
+		} else if l, err := strconv.Atoi(lStr); err == nil && l > 0 {
 			limit = l
 		}
 	}
 
 	sport := r.URL.Query().Get("sport")
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	if search == "" {
+		search = strings.TrimSpace(r.URL.Query().Get("q"))
+	}
 
 	unit := r.URL.Query().Get("unit")
 	if unit == "" {
@@ -1140,7 +1152,7 @@ func handleActivitiesAPI(w http.ResponseWriter, r *http.Request) {
 	}
 
 	store := GetGlobalStore(daemon.dir)
-	activities, total, err := store.GetRecentActivities(limit, sport)
+	activities, total, err := store.GetActivities(limit, sport, search)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error retrieving activities: %v", err), http.StatusInternalServerError)
 		return
@@ -1216,10 +1228,12 @@ func StartWebServer(dir string, port int, syncInterval, checkUpdatesInterval tim
 	mux.HandleFunc("/callback", handleOAuthCallback)
 	mux.HandleFunc("/", handleVolumePage)
 	mux.HandleFunc("/activities", handleActivitiesPage)
+	mux.HandleFunc("/activity", handleActivitiesPage)
 	mux.HandleFunc("/progress", handleProgressPage)
 	mux.HandleFunc("/api/stats", handleStatsAPI)
 	mux.HandleFunc("/api/progress", handleProgressAPI)
 	mux.HandleFunc("/api/activities", handleActivitiesAPI)
+	mux.HandleFunc("/api/activity", handleActivityDetailAPI)
 	mux.HandleFunc("/api/status", handleStatusAPI)
 	mux.HandleFunc("/api/sync", handleTriggerSyncAPI)
 

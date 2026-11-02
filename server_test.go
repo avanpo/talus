@@ -730,3 +730,312 @@ func TestServer_ActivitiesPageAndAPI(t *testing.T) {
 		t.Errorf("expected 0 runs for empty year 2015, got %d", len(respProgEmptyYear.Runs))
 	}
 }
+
+func TestServer_ActivitySearchAndDetail(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "talus-search-detail-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	activitiesDir := filepath.Join(tmpDir, "activities")
+	_ = os.MkdirAll(activitiesDir, 0755)
+
+	cfg := &Config{ClientID: "id", ClientSecret: "secret", AccessToken: "tok", ExpiresAt: time.Now().Add(time.Hour)}
+	_ = SaveConfig(tmpDir, cfg)
+
+	prRank1 := 1
+	act1 := ActivityDetail{
+		ID:                 5001,
+		Name:               "Morning Trail Run in Marin",
+		Description:        "Great misty morning on the trails",
+		Type:               "Run",
+		SportType:          "TrailRun",
+		StartDate:          time.Date(2026, 5, 1, 7, 0, 0, 0, time.UTC),
+		Distance:           10000.0,
+		MovingTime:         3600,
+		ElapsedTime:        3700,
+		TotalElevationGain: 400.0,
+		AverageHeartrate:   150.0,
+		MaxHeartrate:       175.0,
+		AverageCadence:     170.0,
+		AverageWatts:       220.0,
+		Calories:           750.0,
+		Gear:               &GearInfo{ID: "g_hoka", Name: "Hoka Speedgoat 5"},
+		DeviceName:         "Garmin Forerunner 965",
+		Map:                MapInfo{Polyline: "_p~iF~ps|U_ul^nnqC_mqNvxq`@"},
+		SegmentEfforts: []SegmentEffort{
+			{
+				ID: 901,
+				Name: "Dipsea Climb",
+				Segment: SummarySegment{
+					ID:           10,
+					Name:         "Dipsea Climb",
+					Distance:     1500.0,
+					AverageGrade: 8.5,
+				},
+				MovingTime:       450,
+				ElapsedTime:      450,
+				Distance:         1500.0,
+				AverageHeartrate: 168.0,
+				PRRank:           &prRank1,
+			},
+		},
+		SplitsMetric: []SplitDetail{
+			{
+				Split:               1,
+				Distance:            1000.0,
+				MovingTime:          350,
+				ElapsedTime:         350,
+				ElevationDifference: 20.0,
+				AverageHeartrate:    142.0,
+			},
+			{
+				Split:               2,
+				Distance:            1000.0,
+				MovingTime:          360,
+				ElapsedTime:         360,
+				ElevationDifference: 50.0,
+				AverageHeartrate:    155.0,
+			},
+		},
+		SplitsStandard: []SplitDetail{
+			{
+				Split:               1,
+				Distance:            1609.344,
+				MovingTime:          560,
+				ElapsedTime:         560,
+				ElevationDifference: 30.0,
+				AverageHeartrate:    145.0,
+			},
+		},
+		BestEfforts: []BestEffortDetail{
+			{
+				ID:          801,
+				Name:        "1k",
+				Distance:    1000.0,
+				MovingTime:  310,
+				ElapsedTime: 310,
+				PRRank:      &prRank1,
+			},
+		},
+		Streams: map[string]StreamInfo{
+			"distance": {
+				Data: []interface{}{0.0, 500.0, 1000.0, 2000.0},
+			},
+			"altitude": {
+				Data: []interface{}{100.0, 150.0, 180.0, 220.0},
+			},
+			"heartrate": {
+				Data: []interface{}{130.0, 145.0, 152.0, 160.0},
+			},
+			"time": {
+				Data: []interface{}{0, 180, 360, 720},
+			},
+		},
+	}
+
+	act2 := ActivityDetail{
+		ID:                 5002,
+		Name:               "Alpine Ski Tour on Mt Hood",
+		Type:               "BackcountrySki",
+		SportType:          "BackcountrySki",
+		StartDate:          time.Date(2026, 5, 2, 8, 0, 0, 0, time.UTC),
+		Distance:           8000.0,
+		MovingTime:         7200,
+		TotalElevationGain: 900.0,
+	}
+
+	act3 := ActivityDetail{
+		ID:                 5003,
+		Name:               "Marin Headlands Tempo Run",
+		Type:               "Run",
+		SportType:          "Run",
+		StartDate:          time.Date(2026, 5, 3, 7, 30, 0, 0, time.UTC),
+		Distance:           12000.0,
+		MovingTime:         3600,
+		TotalElevationGain: 250.0,
+	}
+
+	act4 := ActivityDetail{
+		ID:                 5004,
+		Name:               "Recovery Road Ride",
+		Type:               "Ride",
+		SportType:          "Ride",
+		StartDate:          time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC),
+		Distance:           30000.0,
+		MovingTime:         4500,
+		TotalElevationGain: 200.0,
+	}
+
+	for _, a := range []ActivityDetail{act1, act2, act3, act4} {
+		data, err := json.Marshal(a)
+		if err != nil {
+			t.Fatalf("failed to marshal activity %d: %v", a.ID, err)
+		}
+		_ = os.WriteFile(filepath.Join(activitiesDir, fmt.Sprintf("%d.json", a.ID)), data, 0644)
+	}
+
+	daemon = newSyncDaemon(tmpDir, 1*time.Hour, 24*time.Hour, true)
+
+	// 1. Search tests on /api/activities
+	// Search for "Marin" -> should match 5003 and 5001 (newest first: 5003, 5001)
+	reqSearchMarin := httptest.NewRequest(http.MethodGet, "/api/activities?search=Marin", nil)
+	wSearchMarin := httptest.NewRecorder()
+	handleActivitiesAPI(wSearchMarin, reqSearchMarin)
+	if wSearchMarin.Code != http.StatusOK {
+		t.Fatalf("expected 200 from search, got %d", wSearchMarin.Code)
+	}
+
+	var respSearchMarin ActivitiesResponseJSON
+	_ = json.Unmarshal(wSearchMarin.Body.Bytes(), &respSearchMarin)
+	if respSearchMarin.Total != 2 || len(respSearchMarin.Activities) != 2 {
+		t.Fatalf("expected 2 activities for 'Marin', got total=%d len=%d", respSearchMarin.Total, len(respSearchMarin.Activities))
+	}
+	if respSearchMarin.Activities[0].ID != 5003 || respSearchMarin.Activities[1].ID != 5001 {
+		t.Errorf("unexpected activities order for 'Marin': %v", respSearchMarin.Activities)
+	}
+
+	// Search case-insensitivity: "ski tour"
+	reqSearchSki := httptest.NewRequest(http.MethodGet, "/api/activities?search=ski+tour", nil)
+	wSearchSki := httptest.NewRecorder()
+	handleActivitiesAPI(wSearchSki, reqSearchSki)
+	var respSearchSki ActivitiesResponseJSON
+	_ = json.Unmarshal(wSearchSki.Body.Bytes(), &respSearchSki)
+	if respSearchSki.Total != 1 || len(respSearchSki.Activities) != 1 {
+		t.Fatalf("expected 1 activity for 'ski tour', got total=%d len=%d", respSearchSki.Total, len(respSearchSki.Activities))
+	}
+	if respSearchSki.Activities[0].ID != 5002 {
+		t.Errorf("expected activity 5002, got %d", respSearchSki.Activities[0].ID)
+	}
+
+	// Search combined with sport filter: search="marin" and sport="trail"
+	reqSearchSport := httptest.NewRequest(http.MethodGet, "/api/activities?search=marin&sport=trail", nil)
+	wSearchSport := httptest.NewRecorder()
+	handleActivitiesAPI(wSearchSport, reqSearchSport)
+	var respSearchSport ActivitiesResponseJSON
+	_ = json.Unmarshal(wSearchSport.Body.Bytes(), &respSearchSport)
+	if respSearchSport.Total != 1 || len(respSearchSport.Activities) != 1 {
+		t.Fatalf("expected 1 activity for 'marin' + 'trail', got total=%d", respSearchSport.Total)
+	}
+	if respSearchSport.Activities[0].ID != 5001 {
+		t.Errorf("expected activity 5001, got %d", respSearchSport.Activities[0].ID)
+	}
+
+	// Search for non-existent text
+	reqSearchNone := httptest.NewRequest(http.MethodGet, "/api/activities?search=NonExistentWordXYZ", nil)
+	wSearchNone := httptest.NewRecorder()
+	handleActivitiesAPI(wSearchNone, reqSearchNone)
+	var respSearchNone ActivitiesResponseJSON
+	_ = json.Unmarshal(wSearchNone.Body.Bytes(), &respSearchNone)
+	if respSearchNone.Total != 0 || len(respSearchNone.Activities) != 0 {
+		t.Fatalf("expected 0 activities for non-existent search, got %d", respSearchNone.Total)
+	}
+
+	// 2. Activity Detail tests on /api/activity
+	reqDetail := httptest.NewRequest(http.MethodGet, "/api/activity?id=5001&unit=mi", nil)
+	wDetail := httptest.NewRecorder()
+	handleActivityDetailAPI(wDetail, reqDetail)
+	if wDetail.Code != http.StatusOK {
+		t.Fatalf("expected 200 from activity detail, got %d", wDetail.Code)
+	}
+
+	var detailResp ActivityDetailResponseJSON
+	if err := json.Unmarshal(wDetail.Body.Bytes(), &detailResp); err != nil {
+		t.Fatalf("failed to decode detail JSON: %v", err)
+	}
+
+	if detailResp.ID != 5001 {
+		t.Errorf("expected detail ID 5001, got %d", detailResp.ID)
+	}
+	if detailResp.Name != "Morning Trail Run in Marin" {
+		t.Errorf("expected name 'Morning Trail Run in Marin', got %q", detailResp.Name)
+	}
+	if detailResp.Description != "Great misty morning on the trails" {
+		t.Errorf("expected description 'Great misty morning on the trails', got %q", detailResp.Description)
+	}
+	if detailResp.SportType != "Trail Run" {
+		t.Errorf("expected sport type 'Trail Run', got %q", detailResp.SportType)
+	}
+	if detailResp.Shoe != "Hoka Speedgoat 5" {
+		t.Errorf("expected shoe 'Hoka Speedgoat 5', got %q", detailResp.Shoe)
+	}
+	if detailResp.DeviceName != "Garmin Forerunner 965" {
+		t.Errorf("expected device 'Garmin Forerunner 965', got %q", detailResp.DeviceName)
+	}
+	if detailResp.AverageHeartrate != 150.0 {
+		t.Errorf("expected avg HR 150, got %f", detailResp.AverageHeartrate)
+	}
+	if detailResp.EfficiencyFactorFmt == "" {
+		t.Errorf("expected non-empty efficiency factor format")
+	}
+	if len(detailResp.Coordinates) == 0 {
+		t.Errorf("expected decoded GPS coordinates from polyline")
+	}
+	if len(detailResp.Segments) != 1 {
+		t.Fatalf("expected 1 segment effort, got %d", len(detailResp.Segments))
+	}
+	if detailResp.Segments[0].Name != "Dipsea Climb" {
+		t.Errorf("expected segment name 'Dipsea Climb', got %q", detailResp.Segments[0].Name)
+	}
+	if detailResp.Segments[0].PRRank == nil || *detailResp.Segments[0].PRRank != 1 {
+		t.Errorf("expected PRRank 1, got %v", detailResp.Segments[0].PRRank)
+	}
+	if len(detailResp.Splits) == 0 {
+		t.Errorf("expected splits in detail response")
+	}
+	if detailResp.Streams == nil || len(detailResp.Streams.Altitude) == 0 {
+		t.Errorf("expected telemetry streams in detail response")
+	}
+	if !strings.Contains(detailResp.StravaURL, "5001") {
+		t.Errorf("expected StravaURL to contain activity ID 5001, got %q", detailResp.StravaURL)
+	}
+
+	// Test detail via /api/activities?id=5001
+	reqDetailViaActivities := httptest.NewRequest(http.MethodGet, "/api/activities?id=5001", nil)
+	wDetailViaActivities := httptest.NewRecorder()
+	handleActivitiesAPI(wDetailViaActivities, reqDetailViaActivities)
+	if wDetailViaActivities.Code != http.StatusOK {
+		t.Fatalf("expected 200 via /api/activities?id=5001, got %d", wDetailViaActivities.Code)
+	}
+
+	// 3. Error cases
+	// Missing ID
+	reqNoID := httptest.NewRequest(http.MethodGet, "/api/activity", nil)
+	wNoID := httptest.NewRecorder()
+	handleActivityDetailAPI(wNoID, reqNoID)
+	if wNoID.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for missing id, got %d", wNoID.Code)
+	}
+
+	// Invalid ID
+	reqBadID := httptest.NewRequest(http.MethodGet, "/api/activity?id=abc", nil)
+	wBadID := httptest.NewRecorder()
+	handleActivityDetailAPI(wBadID, reqBadID)
+	if wBadID.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad id, got %d", wBadID.Code)
+	}
+
+	// Non-existent ID
+	reqMissingAct := httptest.NewRequest(http.MethodGet, "/api/activity?id=99999", nil)
+	wMissingAct := httptest.NewRecorder()
+	handleActivityDetailAPI(wMissingAct, reqMissingAct)
+	if wMissingAct.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for missing activity, got %d", wMissingAct.Code)
+	}
+
+	// 4. Test page render for /activity and /activities
+	reqActivityPage := httptest.NewRequest(http.MethodGet, "/activity?id=5001", nil)
+	wActivityPage := httptest.NewRecorder()
+	handleActivitiesPage(wActivityPage, reqActivityPage)
+	if wActivityPage.Code != http.StatusOK {
+		t.Fatalf("expected 200 for /activity page, got %d", wActivityPage.Code)
+	}
+	body := wActivityPage.Body.String()
+	if !strings.Contains(body, "searchInput") {
+		t.Errorf("activities page missing searchInput element")
+	}
+	if !strings.Contains(body, "activityDetailView") {
+		t.Errorf("activities page missing activityDetailView container")
+	}
+}

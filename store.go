@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -601,9 +602,10 @@ func (s *ActivityStore) GetAvailableYears() ([]int, error) {
 	return s.years, nil
 }
 
-// GetRecentActivities returns the most recent N activities matching the sport filter,
+// GetActivities returns activities matching the sport and name query filters,
 // sorted newest first, along with the total count of matching activities.
-func (s *ActivityStore) GetRecentActivities(limit int, sport string) ([]*ActivityDetail, int, error) {
+// If limit <= 0, all matching activities are returned.
+func (s *ActivityStore) GetActivities(limit int, sport string, query string) ([]*ActivityDetail, int, error) {
 	if err := s.ReloadIfNeeded(); err != nil {
 		return nil, 0, err
 	}
@@ -616,9 +618,7 @@ func (s *ActivityStore) GetRecentActivities(limit int, sport string) ([]*Activit
 		return nil, 0, nil
 	}
 
-	if limit <= 0 {
-		limit = 10
-	}
+	query = strings.TrimSpace(strings.ToLower(query))
 
 	matchedTotal := 0
 	var res []*ActivityDetail
@@ -626,12 +626,59 @@ func (s *ActivityStore) GetRecentActivities(limit int, sport string) ([]*Activit
 	for i := total - 1; i >= 0; i-- {
 		act := s.activities[i]
 		if MatchesSportFilter(act, sport) {
+			if query != "" && !strings.Contains(strings.ToLower(act.Name), query) {
+				continue
+			}
 			matchedTotal++
-			if len(res) < limit {
+			if limit <= 0 || len(res) < limit {
 				res = append(res, act)
 			}
 		}
 	}
 
 	return res, matchedTotal, nil
+}
+
+// GetRecentActivities returns the most recent N activities matching the sport filter,
+// sorted newest first, along with the total count of matching activities.
+func (s *ActivityStore) GetRecentActivities(limit int, sport string) ([]*ActivityDetail, int, error) {
+	return s.GetActivities(limit, sport, "")
+}
+
+// GetActivityDetailByID retrieves complete activity details by activity ID.
+// It loads full data including streams, splits, and segment efforts from disk when available,
+// falling back to the in-memory cache.
+func (s *ActivityStore) GetActivityDetailByID(id int64) (*ActivityDetail, error) {
+	if err := s.ReloadIfNeeded(); err != nil {
+		return nil, err
+	}
+
+	// Try reading directly from disk first to get the complete raw data
+	filePath := filepath.Join(s.dir, "activities", fmt.Sprintf("%d.json", id))
+	if data, err := os.ReadFile(filePath); err == nil {
+		var act ActivityDetail
+		if err := json.Unmarshal(data, &act); err == nil {
+			return &act, nil
+		}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	filename := fmt.Sprintf("%d.json", id)
+	if item, ok := s.cacheMap[filename]; ok && item.activity != nil {
+		actCopy := *item.activity
+		if len(item.segmentEfforts) > 0 && len(actCopy.SegmentEfforts) == 0 {
+			actCopy.SegmentEfforts = item.segmentEfforts
+		}
+		return &actCopy, nil
+	}
+
+	for _, a := range s.activities {
+		if a.ID == id {
+			return a, nil
+		}
+	}
+
+	return nil, fmt.Errorf("activity %d not found", id)
 }

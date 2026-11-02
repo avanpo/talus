@@ -5,11 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Activities - talus</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛰️</text></svg>">
+    <!-- Leaflet for interactive activity GPS maps -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <!-- Chart.js for elevation profile and telemetry charts -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <style>
         :root {
             --bg-body: #f8fafc;
             --bg-card: #ffffff;
-            --bg-card-hover: #f8fafc;
+            --bg-card-hover: #f1f5f9;
             --bg-subtle: #f1f5f9;
             --border: #e2e8f0;
             --border-light: #cbd5e1;
@@ -22,6 +27,7 @@
             --amber: #d97706;
             --rose: #e11d48;
             --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
+            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -192,7 +198,7 @@
             display: flex;
             align-items: center;
             justify-content: flex-start;
-            gap: 1.5rem;
+            gap: 1.25rem;
             flex-wrap: wrap;
             box-shadow: var(--shadow);
             margin-bottom: 1.5rem;
@@ -226,6 +232,64 @@
             transition: border-color 0.15s;
         }
         .select-input:focus { border-color: var(--primary); }
+
+        /* Search input styling */
+        .search-group {
+            flex: 1;
+            min-width: 260px;
+        }
+
+        .search-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+            flex: 1;
+            max-width: 460px;
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 0.75rem;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            pointer-events: none;
+        }
+
+        .search-input {
+            width: 100%;
+            background-color: var(--bg-card);
+            color: var(--text-main);
+            border: 1px solid var(--border);
+            padding: 0.48rem 2.2rem 0.48rem 2.2rem;
+            border-radius: 6px;
+            font-size: 0.88rem;
+            outline: none;
+            transition: all 0.15s ease;
+        }
+        .search-input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+        }
+
+        .search-clear-btn {
+            position: absolute;
+            right: 0.65rem;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 1rem;
+            line-height: 1;
+            padding: 0.2rem;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .search-clear-btn:hover {
+            color: var(--text-main);
+            background-color: var(--bg-subtle);
+        }
 
         .table-card {
             background-color: var(--bg-card);
@@ -281,8 +345,12 @@
             border-bottom: none;
         }
 
-        tbody tr:hover {
-            background-color: var(--bg-card-hover);
+        /* Clickable row state */
+        .activity-row {
+            cursor: pointer;
+        }
+        .activity-row:hover {
+            background-color: #f1f5f9;
         }
 
         tbody td {
@@ -290,6 +358,23 @@
             color: var(--text-main);
             white-space: nowrap;
             vertical-align: middle;
+        }
+
+        .activity-name-cell {
+            font-weight: 600;
+        }
+
+        .activity-name-link {
+            color: var(--primary);
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            transition: color 0.15s;
+        }
+        .activity-name-link:hover {
+            color: var(--primary-hover);
+            text-decoration: underline;
         }
 
         .cell-highlight {
@@ -316,6 +401,7 @@
         .badge-green { background: #dcfce7; color: #15803d; }
         .badge-amber { background: #fef3c7; color: #b45309; }
         .badge-cyan { background: #cffafe; color: #0e7490; }
+        .badge-purple { background: #ede9fe; color: #6d28d9; }
         .badge-gray { background: #f1f5f9; color: #475569; }
 
         .shoe-pill {
@@ -333,6 +419,324 @@
 
         .shoe-icon {
             font-size: 0.95rem;
+        }
+
+        /* ============================================================
+           Activity Detail View Styles
+           ============================================================ */
+        .detail-view {
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            animation: fadeIn 0.2s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .detail-nav-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .btn-back {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 0.55rem 1rem;
+            border-radius: 8px;
+            font-size: 0.88rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            box-shadow: var(--shadow);
+            text-decoration: none;
+        }
+        .btn-back:hover {
+            background-color: var(--bg-subtle);
+            border-color: var(--border-light);
+        }
+
+        .btn-strava {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            background-color: #fc4c02;
+            color: #ffffff;
+            padding: 0.55rem 1rem;
+            border-radius: 8px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-decoration: none;
+            transition: opacity 0.15s;
+            box-shadow: var(--shadow);
+        }
+        .btn-strava:hover {
+            opacity: 0.92;
+        }
+
+        .detail-header-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            box-shadow: var(--shadow);
+        }
+
+        .detail-date {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.4rem;
+        }
+
+        .detail-title {
+            font-size: 1.85rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            color: var(--text-main);
+            line-height: 1.25;
+            margin-bottom: 0.85rem;
+        }
+
+        .detail-tags {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            flex-wrap: wrap;
+        }
+
+        .detail-desc-card {
+            margin-top: 1.1rem;
+            padding: 0.9rem 1.1rem;
+            background-color: var(--bg-subtle);
+            border-left: 4px solid var(--primary);
+            border-radius: 0 8px 8px 0;
+            color: var(--text-main);
+            font-size: 0.92rem;
+            line-height: 1.5;
+            white-space: pre-wrap;
+        }
+
+        /* Hero metric grid */
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+        }
+
+        .metric-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.15rem 1.25rem;
+            box-shadow: var(--shadow);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .metric-label {
+            font-size: 0.78rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 0.4rem;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .metric-value {
+            font-size: 1.7rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+            color: var(--text-main);
+        }
+
+        .metric-sub {
+            font-size: 0.82rem;
+            color: var(--text-muted);
+            margin-top: 0.35rem;
+        }
+
+        /* Map Card */
+        .map-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .map-header {
+            padding: 1.1rem 1.25rem;
+            border-bottom: 1px solid var(--border);
+            font-size: 1.05rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        #activityMap {
+            height: 380px;
+            width: 100%;
+            background-color: #e2e8f0;
+            z-index: 1;
+        }
+
+        /* SVG Map Fallback */
+        .svg-map-fallback {
+            width: 100%;
+            height: 320px;
+            background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Telemetry Chart Card */
+        .chart-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.25rem;
+            box-shadow: var(--shadow);
+        }
+
+        .chart-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1rem;
+        }
+
+        .chart-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 260px;
+            width: 100%;
+        }
+
+        /* Splits & Segments Tables in Details */
+        .detail-table-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            box-shadow: var(--shadow);
+            overflow: hidden;
+        }
+
+        .detail-table-header {
+            padding: 1.1rem 1.25rem;
+            border-bottom: 1px solid var(--border);
+            font-size: 1.05rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        /* Best Efforts Grid */
+        .best-efforts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 0.75rem;
+            padding: 1.25rem;
+        }
+
+        .best-effort-pill {
+            background-color: var(--bg-subtle);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.75rem 1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .best-effort-name {
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .best-effort-time {
+            font-size: 1.25rem;
+            font-weight: 800;
+            color: var(--text-main);
+        }
+
+        .pr-badge {
+            font-size: 0.85rem;
+        }
+
+        /* Metadata Card */
+        .meta-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.25rem;
+            box-shadow: var(--shadow);
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1rem;
+        }
+
+        .meta-item-label {
+            font-weight: 600;
+            color: var(--text-dim);
+            text-transform: uppercase;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.2rem;
+        }
+
+        .meta-item-value {
+            color: var(--text-main);
+            font-weight: 500;
+        }
+
+        /* Loading spinner */
+        .loading-container {
+            text-align: center;
+            padding: 3.5rem 1.5rem;
+            color: var(--text-muted);
+        }
+        .spinner {
+            width: 32px;
+            height: 32px;
+            border: 3px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 1rem auto;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
         }
 
         footer {
@@ -370,70 +774,93 @@
     </header>
 
     <main>
-        <div class="page-header">
-            <div>
-                <h1 class="page-title">Activities</h1>
-                <div class="page-desc">Chronological view of your recent activities with distance, elevation, time, and gear.</div>
-            </div>
-        </div>
-
-        <div class="controls-card">
-            <div class="controls-group">
-                <span class="controls-label">Activity Type:</span>
-                <select class="select-input" id="sportSelect" onchange="loadActivities()">
-                    <option value="all" selected>All Activities</option>
-                    <option value="cardio">All Cardio</option>
-                    <option value="run">All Running</option>
-                    <option value="trail">Trail Running</option>
-                    <option value="road">Road Running</option>
-                    <option value="treadmill">Treadmill Running</option>
-                    <option value="hike">Hiking &amp; Walking</option>
-                    <option value="ride">All Cycling</option>
-                    <option value="gravel">Gravel Cycling</option>
-                    <option value="mtb">Mountain Biking</option>
-                    <option value="virtual_ride">Virtual Cycling</option>
-                    <option value="ski_tour">Backcountry Skiing</option>
-                </select>
-            </div>
-            <div class="controls-group">
-                <span class="controls-label">Show:</span>
-                <select class="select-input" id="limitSelect" onchange="loadActivities()">
-                    <option value="10" selected>10 activities</option>
-                    <option value="20">20 activities</option>
-                    <option value="50">50 activities</option>
-                </select>
-            </div>
-        </div>
-
-        <div class="table-card">
-            <div class="table-card-header">
-                <div class="table-card-title">
-                    <span>Recent Activities</span>
-                    <span class="badge badge-gray" id="activityCountBadge">Loading...</span>
+        <!-- List View -->
+        <div id="activitiesListView">
+            <div class="page-header">
+                <div>
+                    <h1 class="page-title">Activities</h1>
+                    <div class="page-desc">Chronological view of your recent activities with distance, elevation, time, and gear. Click any activity to view full telemetry details.</div>
                 </div>
             </div>
-            <div class="table-responsive">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Date</th>
-                            <th>Name</th>
-                            <th>Activity Type</th>
-                            <th>Distance</th>
-                            <th>Elevation</th>
-                            <th>Elapsed Time</th>
-                            <th>Shoe Used</th>
-                        </tr>
-                    </thead>
-                    <tbody id="activitiesTableBody">
-                        <tr>
-                            <td colspan="7" style="text-align:center; padding: 2.5rem; color:var(--text-muted);">
-                                Loading activities...
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
+
+            <div class="controls-card">
+                <!-- Search box -->
+                <div class="controls-group search-group">
+                    <span class="controls-label">Search:</span>
+                    <div class="search-wrapper">
+                        <span class="search-icon">🔍</span>
+                        <input type="text" id="searchInput" class="search-input" placeholder="Search activities by name..." autocomplete="off">
+                        <button type="button" id="clearSearchBtn" class="search-clear-btn" title="Clear search" style="display: none;" onclick="clearSearch()">&times;</button>
+                    </div>
+                </div>
+
+                <!-- Activity Type Filter -->
+                <div class="controls-group">
+                    <span class="controls-label">Type:</span>
+                    <select class="select-input" id="sportSelect" onchange="loadActivities()">
+                        <option value="all" selected>All Activities</option>
+                        <option value="cardio">All Cardio</option>
+                        <option value="run">All Running</option>
+                        <option value="trail">Trail Running</option>
+                        <option value="road">Road Running</option>
+                        <option value="treadmill">Treadmill Running</option>
+                        <option value="hike">Hiking &amp; Walking</option>
+                        <option value="ride">All Cycling</option>
+                        <option value="gravel">Gravel Cycling</option>
+                        <option value="mtb">Mountain Biking</option>
+                        <option value="virtual_ride">Virtual Cycling</option>
+                        <option value="ski_tour">Backcountry Skiing</option>
+                    </select>
+                </div>
+
+                <!-- Limit Filter -->
+                <div class="controls-group">
+                    <span class="controls-label">Show:</span>
+                    <select class="select-input" id="limitSelect" onchange="loadActivities()">
+                        <option value="10" selected>10 activities</option>
+                        <option value="20">20 activities</option>
+                        <option value="50">50 activities</option>
+                        <option value="100">100 activities</option>
+                        <option value="all">All activities</option>
+                    </select>
+                </div>
             </div>
+
+            <div class="table-card">
+                <div class="table-card-header">
+                    <div class="table-card-title">
+                        <span>Activities</span>
+                        <span class="badge badge-gray" id="activityCountBadge">Loading...</span>
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Name</th>
+                                <th>Activity Type</th>
+                                <th>Distance</th>
+                                <th>Elevation</th>
+                                <th>Elapsed Time</th>
+                                <th>Shoe Used</th>
+                            </tr>
+                        </thead>
+                        <tbody id="activitiesTableBody">
+                            <tr>
+                                <td colspan="7" style="text-align:center; padding: 2.5rem; color:var(--text-muted);">
+                                    Loading activities...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Detail View Container -->
+        <div id="activityDetailView" class="detail-view" style="display: none;">
+            <!-- Dynamically populated by renderActivityDetail -->
         </div>
     </main>
 
@@ -442,6 +869,10 @@
     </footer>
 
     <script>
+        let currentMap = null;
+        let currentChart = null;
+        let searchDebounceTimer = null;
+
         function escapeHtml(str) {
             if (!str) return '';
             return String(str)
@@ -475,9 +906,45 @@
             } else if (st.includes('swim')) {
                 badgeClass = 'badge-blue';
                 icon = '🏊';
+            } else if (st.includes('weight')) {
+                badgeClass = 'badge-purple';
+                icon = '🏋️';
             }
 
             return `<span class="badge ${badgeClass}">${icon} ${escapeHtml(sportType)}</span>`;
+        }
+
+        function getPRMedal(rank) {
+            if (!rank) return '';
+            if (rank === 1) return '<span class="pr-badge" title="1st Best PR">🥇 PR</span>';
+            if (rank === 2) return '<span class="pr-badge" title="2nd Best">🥈 2nd</span>';
+            if (rank === 3) return '<span class="pr-badge" title="3rd Best">🥉 3rd</span>';
+            return `<span class="badge badge-gray">#${rank}</span>`;
+        }
+
+        // Search input handling
+        const searchInput = document.getElementById('searchInput');
+        const clearBtn = document.getElementById('clearSearchBtn');
+
+        searchInput.addEventListener('input', () => {
+            const val = searchInput.value;
+            clearBtn.style.display = val ? 'flex' : 'none';
+            clearTimeout(searchDebounceTimer);
+            searchDebounceTimer = setTimeout(loadActivities, 250);
+        });
+
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                clearTimeout(searchDebounceTimer);
+                loadActivities();
+            }
+        });
+
+        function clearSearch() {
+            searchInput.value = '';
+            clearBtn.style.display = 'none';
+            searchInput.focus();
+            loadActivities();
         }
 
         async function updateStatus() {
@@ -529,26 +996,43 @@
             const tbody = document.getElementById('activitiesTableBody');
             const sport = document.getElementById('sportSelect') ? document.getElementById('sportSelect').value : 'all';
             const limit = document.getElementById('limitSelect') ? document.getElementById('limitSelect').value : '10';
+            const search = document.getElementById('searchInput') ? document.getElementById('searchInput').value.trim() : '';
 
             try {
-                const res = await fetch(`/api/activities?limit=${limit}&sport=${sport}`);
+                let url = `/api/activities?limit=${encodeURIComponent(limit)}&sport=${encodeURIComponent(sport)}`;
+                if (search) {
+                    url += `&search=${encodeURIComponent(search)}`;
+                }
+
+                const res = await fetch(url);
                 if (!res.ok) throw new Error('API error ' + res.status);
                 const data = await res.json();
 
                 const activities = data.activities || [];
+                const total = data.total || 0;
+
                 if (activities.length === 0) {
+                    const msg = search 
+                        ? `No activities matching "${escapeHtml(search)}" found.` 
+                        : 'No matching activities found.';
                     tbody.innerHTML = `
                         <tr>
                             <td colspan="7" style="text-align:center; padding: 2.5rem; color:var(--text-dim);">
-                                No matching activities found.
+                                ${msg}
                             </td>
                         </tr>
                     `;
-                    document.getElementById('activityCountBadge').textContent = `0 of ${data.total || 0}`;
+                    document.getElementById('activityCountBadge').textContent = search 
+                        ? `0 matches for "${escapeHtml(search)}"`
+                        : `0 of ${total}`;
                     return;
                 }
 
-                document.getElementById('activityCountBadge').textContent = `Showing ${activities.length} of ${data.total || activities.length}`;
+                if (search) {
+                    document.getElementById('activityCountBadge').textContent = `Showing ${activities.length} of ${total} matching "${escapeHtml(search)}"`;
+                } else {
+                    document.getElementById('activityCountBadge').textContent = `Showing ${activities.length} of ${total}`;
+                }
 
                 let html = '';
                 activities.forEach(act => {
@@ -562,9 +1046,13 @@
                     }
 
                     html += `
-                        <tr>
+                        <tr class="activity-row" onclick="goToActivity('${act.id}')">
                             <td class="cell-subdued">${escapeHtml(act.start_date_fmt)}</td>
-                            <td class="cell-highlight">${escapeHtml(act.name || 'Untitled Activity')}</td>
+                            <td class="activity-name-cell">
+                                <a href="/activities?id=${act.id}" class="activity-name-link" onclick="event.preventDefault(); goToActivity('${act.id}');">
+                                    ${escapeHtml(act.name || 'Untitled Activity')}
+                                </a>
+                            </td>
                             <td>${getSportBadge(act.sport_type)}</td>
                             <td class="cell-highlight">${escapeHtml(act.distance_fmt)}</td>
                             <td>${escapeHtml(act.elevation_fmt)}</td>
@@ -587,8 +1075,647 @@
             }
         }
 
-        // Initialize
-        loadActivities();
+        // Go to specific activity detail view
+        async function goToActivity(id, pushState = true) {
+            if (pushState) {
+                history.pushState({ activityId: id }, '', `/activities?id=${encodeURIComponent(id)}`);
+            }
+
+            // Clean up existing map and chart if any
+            cleanUpDetailInstances();
+
+            const listView = document.getElementById('activitiesListView');
+            const detailView = document.getElementById('activityDetailView');
+
+            listView.style.display = 'none';
+            detailView.style.display = 'flex';
+            detailView.innerHTML = `
+                <div class="loading-container">
+                    <div class="spinner"></div>
+                    <div>Loading activity details...</div>
+                </div>
+            `;
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+
+            try {
+                const res = await fetch(`/api/activity?id=${encodeURIComponent(id)}`);
+                if (!res.ok) throw new Error('API error ' + res.status);
+                const act = await res.json();
+                renderActivityDetail(act);
+            } catch (e) {
+                console.error('Error loading activity detail:', e);
+                detailView.innerHTML = `
+                    <div class="detail-nav-bar">
+                        <button class="btn-back" onclick="backToActivitiesList()">← Back to Activities</button>
+                    </div>
+                    <div style="background-color: var(--bg-card); padding: 2.5rem; border-radius: 12px; border: 1px solid var(--border); text-align: center; color: var(--rose);">
+                        <h3>Failed to load activity details</h3>
+                        <p style="margin-top: 0.5rem; color: var(--text-muted);">${escapeHtml(e.message)}</p>
+                    </div>
+                `;
+            }
+        }
+
+        function backToActivitiesList(pushState = true) {
+            cleanUpDetailInstances();
+
+            if (pushState) {
+                history.pushState(null, '', '/activities');
+            }
+
+            document.getElementById('activityDetailView').style.display = 'none';
+            document.getElementById('activitiesListView').style.display = 'block';
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        function cleanUpDetailInstances() {
+            if (currentMap) {
+                try {
+                    currentMap.remove();
+                } catch (e) {}
+                currentMap = null;
+            }
+            if (currentChart) {
+                try {
+                    currentChart.destroy();
+                } catch (e) {}
+                currentChart = null;
+            }
+        }
+
+        function renderActivityDetail(act) {
+            const container = document.getElementById('activityDetailView');
+
+            // Format tags / badges
+            let tagsHtml = getSportBadge(act.sport_type);
+            if (act.shoe_relevant && act.shoe) {
+                tagsHtml += ` <span class="shoe-pill"><span class="shoe-icon">👟</span>${escapeHtml(act.shoe)}</span>`;
+            } else if (act.gear_name) {
+                tagsHtml += ` <span class="shoe-pill"><span class="shoe-icon">⚙️</span>${escapeHtml(act.gear_name)}</span>`;
+            }
+            if (act.device_name) {
+                tagsHtml += ` <span class="badge badge-gray">⌚ ${escapeHtml(act.device_name)}</span>`;
+            }
+
+            // Description block
+            let descHtml = '';
+            if (act.description) {
+                descHtml = `<div class="detail-desc-card">${escapeHtml(act.description)}</div>`;
+            }
+
+            // Hero Metric Cards
+            const isRun = (act.sport_type || '').toLowerCase().includes('run') || (act.type || '').toLowerCase().includes('run');
+            const primaryPaceSpeedLabel = isRun ? 'Avg Pace' : 'Avg Speed';
+            const primaryPaceSpeedVal = isRun 
+                ? (act.avg_pace_fmt || '—') 
+                : (act.avg_speed_fmt || act.avg_pace_fmt || '—');
+            const subPaceSpeed = isRun 
+                ? (act.avg_speed_fmt ? `${act.avg_speed_fmt}` : '') 
+                : (act.avg_pace_fmt ? `${act.avg_pace_fmt}` : '');
+
+            let hrCard = '';
+            if (act.average_heartrate > 0) {
+                let subHr = act.max_heartrate > 0 ? `Max: ${Math.round(act.max_heartrate)} bpm` : '';
+                hrCard = `
+                    <div class="metric-card">
+                        <div class="metric-label">❤️ Heart Rate</div>
+                        <div class="metric-value">${Math.round(act.average_heartrate)} <span style="font-size: 1rem; font-weight: 500;">bpm</span></div>
+                        <div class="metric-sub">${subHr}</div>
+                    </div>
+                `;
+            }
+
+            let efCard = '';
+            if (act.efficiency_factor_fmt) {
+                efCard = `
+                    <div class="metric-card">
+                        <div class="metric-label">⚡ Efficiency Factor</div>
+                        <div class="metric-value">${escapeHtml(act.efficiency_factor_fmt)}</div>
+                        <div class="metric-sub">Pace / Heart Rate efficiency</div>
+                    </div>
+                `;
+            }
+
+            let cadenceCard = '';
+            if (act.average_cadence > 0) {
+                const cadUnit = isRun ? 'spm' : 'rpm';
+                cadenceCard = `
+                    <div class="metric-card">
+                        <div class="metric-label">🔄 Cadence</div>
+                        <div class="metric-value">${Math.round(act.average_cadence)} <span style="font-size: 1rem; font-weight: 500;">${cadUnit}</span></div>
+                        <div class="metric-sub">Average cadence</div>
+                    </div>
+                `;
+            }
+
+            let energyCard = '';
+            if (act.calories > 0 || act.average_watts > 0 || act.kilojoules > 0) {
+                let mainVal = '';
+                let subVal = '';
+                if (act.average_watts > 0) {
+                    mainVal = `${Math.round(act.average_watts)} <span style="font-size: 1rem; font-weight: 500;">W</span>`;
+                    if (act.max_watts > 0) subVal += `Max: ${Math.round(act.max_watts)} W • `;
+                    if (act.kilojoules > 0) subVal += `${Math.round(act.kilojoules)} kJ`;
+                } else if (act.calories > 0) {
+                    mainVal = `${Math.round(act.calories)} <span style="font-size: 1rem; font-weight: 500;">kcal</span>`;
+                    subVal = 'Estimated calories burned';
+                }
+                energyCard = `
+                    <div class="metric-card">
+                        <div class="metric-label">🔥 Output &amp; Energy</div>
+                        <div class="metric-value">${mainVal}</div>
+                        <div class="metric-sub">${subVal}</div>
+                    </div>
+                `;
+            }
+
+            // Elevation High/Low subtext
+            let elevSub = '';
+            if (act.elev_high_fmt && act.elev_low_fmt) {
+                elevSub = `Range: ${act.elev_low_fmt} – ${act.elev_high_fmt}`;
+            }
+
+            // Map Section
+            const hasCoords = act.coordinates && act.coordinates.length > 0;
+            let mapSection = '';
+            if (hasCoords) {
+                mapSection = `
+                    <div class="map-card">
+                        <div class="map-header">
+                            <span>🗺️ Route GPS Track</span>
+                            <span class="badge badge-blue">${act.coordinates.length} waypoints</span>
+                        </div>
+                        <div id="activityMap"></div>
+                    </div>
+                `;
+            }
+
+            // Streams / Elevation Profile Chart Section
+            const hasStreams = act.streams && act.streams.distance && act.streams.altitude && act.streams.distance.length > 1;
+            let chartSection = '';
+            if (hasStreams) {
+                chartSection = `
+                    <div class="chart-card">
+                        <div class="chart-header">
+                            <span class="chart-title">📈 Elevation &amp; Telemetry Profile</span>
+                            <span class="cell-subdued" style="font-size: 0.85rem;">Distance vs Elevation ${act.streams.heartrate ? '&amp; Heart Rate' : ''}</span>
+                        </div>
+                        <div class="chart-container">
+                            <canvas id="streamChart"></canvas>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Splits Section
+            let splitsSection = '';
+            if (act.splits && act.splits.length > 0) {
+                let splitsRows = '';
+                act.splits.forEach(sp => {
+                    splitsRows += `
+                        <tr>
+                            <td class="cell-highlight">Split ${sp.split}</td>
+                            <td>${escapeHtml(sp.distance_fmt)}</td>
+                            <td>${escapeHtml(sp.moving_time_fmt)}</td>
+                            <td class="cell-highlight">${escapeHtml(sp.pace || '—')}</td>
+                            <td>${escapeHtml(sp.elevation_diff_fmt || '—')}</td>
+                            <td>${sp.average_heartrate ? Math.round(sp.average_heartrate) + ' bpm' : '—'}</td>
+                        </tr>
+                    `;
+                });
+
+                splitsSection = `
+                    <div class="detail-table-card">
+                        <div class="detail-table-header">
+                            <span>⏱️ Splits Breakdown (${act.unit})</span>
+                            <span class="badge badge-gray">${act.splits.length} splits</span>
+                        </div>
+                        <div class="table-responsive">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Split</th>
+                                        <th>Distance</th>
+                                        <th>Time</th>
+                                        <th>Pace</th>
+                                        <th>Elevation</th>
+                                        <th>Avg HR</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${splitsRows}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Segment Efforts Section
+            let segmentsSection = '';
+            if (act.segments && act.segments.length > 0) {
+                let segRows = '';
+                act.segments.forEach(seg => {
+                    let medal = getPRMedal(seg.pr_rank);
+                    segRows += `
+                        <tr>
+                            <td class="cell-highlight">${escapeHtml(seg.name)}</td>
+                            <td>${escapeHtml(seg.distance_fmt)}</td>
+                            <td>${escapeHtml(seg.moving_time_fmt)}</td>
+                            <td class="cell-highlight">${escapeHtml(seg.pace || '—')}</td>
+                            <td>${escapeHtml(seg.average_grade_fmt || '—')}</td>
+                            <td>${seg.average_heartrate ? Math.round(seg.average_heartrate) + ' bpm' : '—'}</td>
+                            <td>${medal || '<span class="cell-subdued">—</span>'}</td>
+                        </tr>
+                    `;
+                });
+
+                segmentsSection = `
+                    <div class="detail-table-card">
+                        <div class="detail-table-header">
+                            <span>⚡ Segment Efforts</span>
+                            <span class="badge badge-gray">${act.segments.length} segments</span>
+                        </div>
+                        <div class="table-responsive">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Segment</th>
+                                        <th>Distance</th>
+                                        <th>Time</th>
+                                        <th>Pace</th>
+                                        <th>Grade</th>
+                                        <th>Avg HR</th>
+                                        <th>PR</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${segRows}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Best Efforts Section
+            let bestEffortsSection = '';
+            if (act.best_efforts && act.best_efforts.length > 0) {
+                let beHtml = '';
+                act.best_efforts.forEach(be => {
+                    const medal = getPRMedal(be.pr_rank);
+                    beHtml += `
+                        <div class="best-effort-pill">
+                            <div class="best-effort-name">
+                                <span>${escapeHtml(be.name)}</span>
+                                ${medal}
+                            </div>
+                            <div class="best-effort-time">${escapeHtml(be.time_fmt)}</div>
+                            <div class="cell-subdued" style="font-size: 0.78rem;">${escapeHtml(be.distance_fmt)}</div>
+                        </div>
+                    `;
+                });
+
+                bestEffortsSection = `
+                    <div class="detail-table-card">
+                        <div class="detail-table-header">
+                            <span>🏆 Best Efforts</span>
+                            <span class="badge badge-gray">${act.best_efforts.length} recorded</span>
+                        </div>
+                        <div class="best-efforts-grid">
+                            ${beHtml}
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Laps Section
+            let lapsSection = '';
+            if (act.laps && act.laps.length > 0) {
+                let lapRows = '';
+                act.laps.forEach(lap => {
+                    lapRows += `
+                        <tr>
+                            <td class="cell-highlight">Lap ${lap.lap_index}</td>
+                            <td>${escapeHtml(lap.name || `Lap ${lap.lap_index}`)}</td>
+                            <td>${escapeHtml(lap.distance_fmt)}</td>
+                            <td>${escapeHtml(lap.moving_time_fmt)}</td>
+                            <td class="cell-highlight">${escapeHtml(lap.pace_or_speed || '—')}</td>
+                            <td>${escapeHtml(lap.elevation_fmt || '—')}</td>
+                            <td>${lap.average_heartrate ? Math.round(lap.average_heartrate) + ' bpm' : '—'}</td>
+                        </tr>
+                    `;
+                });
+
+                lapsSection = `
+                    <div class="detail-table-card">
+                        <div class="detail-table-header">
+                            <span>🏁 Laps</span>
+                            <span class="badge badge-gray">${act.laps.length} laps</span>
+                        </div>
+                        <div class="table-responsive">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Lap</th>
+                                        <th>Name</th>
+                                        <th>Distance</th>
+                                        <th>Time</th>
+                                        <th>Pace / Speed</th>
+                                        <th>Elevation</th>
+                                        <th>Avg HR</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${lapRows}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Metadata card
+            let metaHtml = `
+                <div class="meta-card">
+                    <div>
+                        <div class="meta-item-label">Start Time</div>
+                        <div class="meta-item-value">${escapeHtml(act.start_date_full)}</div>
+                    </div>
+                    <div>
+                        <div class="meta-item-label">Elapsed vs Moving</div>
+                        <div class="meta-item-value">${escapeHtml(act.elapsed_time_fmt)} (${escapeHtml(act.moving_time_fmt)} moving)</div>
+                    </div>
+                    ${act.max_speed_fmt ? `
+                    <div>
+                        <div class="meta-item-label">Max Speed</div>
+                        <div class="meta-item-value">${escapeHtml(act.max_speed_fmt)} ${act.max_pace_fmt ? '(' + escapeHtml(act.max_pace_fmt) + ')' : ''}</div>
+                    </div>` : ''}
+                    ${act.average_temp_fmt ? `
+                    <div>
+                        <div class="meta-item-label">Avg Temperature</div>
+                        <div class="meta-item-value">${escapeHtml(act.average_temp_fmt)}</div>
+                    </div>` : ''}
+                    <div>
+                        <div class="meta-item-label">Activity ID</div>
+                        <div class="meta-item-value">${act.id}</div>
+                    </div>
+                </div>
+            `;
+
+            container.innerHTML = `
+                <div class="detail-nav-bar">
+                    <button class="btn-back" onclick="backToActivitiesList()">← Back to Activities</button>
+                    <a href="${act.strava_url}" target="_blank" rel="noopener noreferrer" class="btn-strava">
+                        View on Strava ↗
+                    </a>
+                </div>
+
+                <div class="detail-header-card">
+                    <div class="detail-date">${escapeHtml(act.start_date_full)}</div>
+                    <h1 class="detail-title">${escapeHtml(act.name || 'Untitled Activity')}</h1>
+                    <div class="detail-tags">
+                        ${tagsHtml}
+                    </div>
+                    ${descHtml}
+                </div>
+
+                <div class="metric-grid">
+                    <div class="metric-card">
+                        <div class="metric-label">📏 Distance</div>
+                        <div class="metric-value">${escapeHtml(act.distance_fmt)}</div>
+                        <div class="metric-sub">Total covered distance</div>
+                    </div>
+
+                    <div class="metric-card">
+                        <div class="metric-label">⏱️ Moving Time</div>
+                        <div class="metric-value">${escapeHtml(act.moving_time_fmt)}</div>
+                        <div class="metric-sub">Elapsed: ${escapeHtml(act.elapsed_time_fmt)}</div>
+                    </div>
+
+                    <div class="metric-card">
+                        <div class="metric-label">⚡ ${primaryPaceSpeedLabel}</div>
+                        <div class="metric-value">${escapeHtml(primaryPaceSpeedVal)}</div>
+                        <div class="metric-sub">${escapeHtml(subPaceSpeed)}</div>
+                    </div>
+
+                    <div class="metric-card">
+                        <div class="metric-label">⛰️ Elevation Gain</div>
+                        <div class="metric-value">${escapeHtml(act.elevation_fmt)}</div>
+                        <div class="metric-sub">${escapeHtml(elevSub)}</div>
+                    </div>
+
+                    ${hrCard}
+                    ${efCard}
+                    ${cadenceCard}
+                    ${energyCard}
+                </div>
+
+                ${mapSection}
+                ${chartSection}
+                ${splitsSection}
+                ${segmentsSection}
+                ${bestEffortsSection}
+                ${lapsSection}
+                ${metaHtml}
+            `;
+
+            // Initialize Map
+            if (hasCoords) {
+                setTimeout(() => {
+                    initDetailMap(act.coordinates);
+                }, 50);
+            }
+
+            // Initialize Telemetry Chart
+            if (hasStreams) {
+                setTimeout(() => {
+                    initStreamChart(act.streams, act.unit);
+                }, 50);
+            }
+        }
+
+        function initDetailMap(coords) {
+            const mapEl = document.getElementById('activityMap');
+            if (!mapEl || !window.L) return;
+
+            try {
+                currentMap = L.map('activityMap', {
+                    scrollWheelZoom: false
+                });
+
+                L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    maxZoom: 19,
+                    attribution: '&copy; OpenStreetMap'
+                }).addTo(currentMap);
+
+                const polyline = L.polyline(coords, {
+                    color: '#2563eb',
+                    weight: 4,
+                    opacity: 0.85
+                }).addTo(currentMap);
+
+                // Start Marker (Green)
+                const startCoord = coords[0];
+                L.circleMarker(startCoord, {
+                    radius: 7,
+                    fillColor: '#16a34a',
+                    color: '#ffffff',
+                    weight: 2,
+                    opacity: 1,
+                    fillOpacity: 0.95
+                }).addTo(currentMap).bindPopup('<b>Start</b>');
+
+                // Finish Marker (Red)
+                const endCoord = coords[coords.length - 1];
+                L.circleMarker(endCoord, {
+                    radius: 7,
+                    fillColor: '#e11d48',
+                    color: '#ffffff',
+                    weight: 2,
+                    opacity: 1,
+                    fillOpacity: 0.95
+                }).addTo(currentMap).bindPopup('<b>Finish</b>');
+
+                currentMap.fitBounds(polyline.getBounds(), { padding: [25, 25] });
+            } catch (e) {
+                console.error('Failed to initialize Leaflet map:', e);
+                mapEl.innerHTML = `<div class="svg-map-fallback"><span class="cell-subdued">Route map unavailable offline</span></div>`;
+            }
+        }
+
+        function initStreamChart(streams, unit) {
+            const canvas = document.getElementById('streamChart');
+            if (!canvas || !window.Chart) return;
+
+            try {
+                const ctx = canvas.getContext('2d');
+                const distUnit = unit || 'km';
+                const elevUnit = distUnit === 'mi' ? 'ft' : 'm';
+
+                const datasets = [
+                    {
+                        label: `Elevation (${elevUnit})`,
+                        data: streams.altitude,
+                        borderColor: '#2563eb',
+                        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+                        fill: true,
+                        tension: 0.2,
+                        pointRadius: 0,
+                        borderWidth: 2,
+                        yAxisID: 'yElevation'
+                    }
+                ];
+
+                const scales = {
+                    x: {
+                        title: {
+                            display: true,
+                            text: `Distance (${distUnit})`,
+                            color: '#64748b'
+                        },
+                        grid: { color: 'rgba(226, 232, 240, 0.6)' },
+                        ticks: {
+                            maxTicksLimit: 10,
+                            color: '#64748b'
+                        }
+                    },
+                    yElevation: {
+                        type: 'linear',
+                        display: true,
+                        position: 'left',
+                        title: {
+                            display: true,
+                            text: `Elevation (${elevUnit})`,
+                            color: '#2563eb'
+                        },
+                        grid: { color: 'rgba(226, 232, 240, 0.6)' },
+                        ticks: { color: '#64748b' }
+                    }
+                };
+
+                if (streams.heartrate && streams.heartrate.length === streams.distance.length) {
+                    datasets.push({
+                        label: 'Heart Rate (bpm)',
+                        data: streams.heartrate,
+                        borderColor: '#e11d48',
+                        backgroundColor: 'transparent',
+                        fill: false,
+                        tension: 0.2,
+                        pointRadius: 0,
+                        borderWidth: 1.5,
+                        yAxisID: 'yHR'
+                    });
+
+                    scales.yHR = {
+                        type: 'linear',
+                        display: true,
+                        position: 'right',
+                        title: {
+                            display: true,
+                            text: 'Heart Rate (bpm)',
+                            color: '#e11d48'
+                        },
+                        grid: { drawOnChartArea: false },
+                        ticks: { color: '#e11d48' }
+                    };
+                }
+
+                currentChart = new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: streams.distance,
+                        datasets: datasets
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: {
+                            mode: 'index',
+                            intersect: false
+                        },
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top',
+                                labels: { boxWidth: 12, color: '#0f172a' }
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    title: function(items) {
+                                        return `Distance: ${items[0].label} ${distUnit}`;
+                                    }
+                                }
+                            }
+                        },
+                        scales: scales
+                    }
+                });
+            } catch (e) {
+                console.error('Failed to initialize Chart.js telemetry chart:', e);
+            }
+        }
+
+        // Handle browser Back / Forward buttons
+        window.addEventListener('popstate', (e) => {
+            const urlParams = new URLSearchParams(window.location.search);
+            const actId = urlParams.get('id');
+            if (actId) {
+                goToActivity(actId, false);
+            } else {
+                backToActivitiesList(false);
+            }
+        });
+
+        // Initialize: check if an activity ID is in the query string
+        const initialParams = new URLSearchParams(window.location.search);
+        const initialActId = initialParams.get('id');
+        if (initialActId) {
+            goToActivity(initialActId, false);
+        } else {
+            loadActivities();
+        }
+
         updateStatus();
         setInterval(updateStatus, 15000);
     </script>

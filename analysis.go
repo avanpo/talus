@@ -10,7 +10,8 @@ import (
 
 // MapInfo holds map data for an activity.
 type MapInfo struct {
-	Polyline string `json:"polyline"`
+	Polyline        string `json:"polyline"`
+	SummaryPolyline string `json:"summary_polyline"`
 }
 
 // StreamInfo holds data stream series.
@@ -56,26 +57,82 @@ type GearInfo struct {
 	Distance float64 `json:"distance"`
 }
 
+// SplitDetail represents a standard or metric split from Strava.
+type SplitDetail struct {
+	Split               int     `json:"split"`
+	Distance            float64 `json:"distance"`
+	ElapsedTime         int     `json:"elapsed_time"`
+	MovingTime          int     `json:"moving_time"`
+	ElevationDifference float64 `json:"elevation_difference"`
+	AverageSpeed        float64 `json:"average_speed"`
+	AverageHeartrate    float64 `json:"average_heartrate"`
+	PaceZone            int     `json:"pace_zone"`
+}
+
+// LapDetail represents a lap from Strava.
+type LapDetail struct {
+	ID                 int64   `json:"id"`
+	Name               string  `json:"name"`
+	LapIndex           int     `json:"lap_index"`
+	Distance           float64 `json:"distance"`
+	ElapsedTime        int     `json:"elapsed_time"`
+	MovingTime         int     `json:"moving_time"`
+	TotalElevationGain float64 `json:"total_elevation_gain"`
+	AverageSpeed       float64 `json:"average_speed"`
+	MaxSpeed           float64 `json:"max_speed"`
+	AverageHeartrate   float64 `json:"average_heartrate"`
+	MaxHeartrate       float64 `json:"max_heartrate"`
+	AverageCadence     float64 `json:"average_cadence"`
+}
+
+// BestEffortDetail represents a best effort achievement on Strava.
+type BestEffortDetail struct {
+	ID          int64   `json:"id"`
+	Name        string  `json:"name"`
+	ElapsedTime int     `json:"elapsed_time"`
+	MovingTime  int     `json:"moving_time"`
+	Distance    float64 `json:"distance"`
+	PRRank      *int    `json:"pr_rank"`
+}
+
 // ActivityDetail represents the loaded JSON format for activities.
 type ActivityDetail struct {
-	ID                 int64                 `json:"id"`
-	Name               string                `json:"name"`
-	Type               string                `json:"type"`
-	SportType          string                `json:"sport_type"`
-	StartDate          time.Time             `json:"start_date"`
-	Distance           float64               `json:"distance"` // in meters
-	MovingTime         int                   `json:"moving_time"` // in seconds
-	ElapsedTime        int                   `json:"elapsed_time"`
-	TotalElevationGain float64               `json:"total_elevation_gain"` // in meters
-	AverageHeartrate   float64               `json:"average_heartrate"`
-	MaxHeartrate       float64               `json:"max_heartrate"`
-	AverageCadence     float64               `json:"average_cadence"`
-	AverageSpeed       float64               `json:"average_speed"`
-	GearID             string                `json:"gear_id"`
-	Gear               *GearInfo             `json:"gear"`
-	Map                MapInfo               `json:"map"`
-	Streams            map[string]StreamInfo `json:"streams"`
-	SegmentEfforts     []SegmentEffort       `json:"segment_efforts"`
+	ID                   int64                 `json:"id"`
+	Name                 string                `json:"name"`
+	Description          string                `json:"description"`
+	Type                 string                `json:"type"`
+	SportType            string                `json:"sport_type"`
+	StartDate            time.Time             `json:"start_date"`
+	StartDateLocal       string                `json:"start_date_local"`
+	Timezone             string                `json:"timezone"`
+	Distance             float64               `json:"distance"` // in meters
+	MovingTime           int                   `json:"moving_time"` // in seconds
+	ElapsedTime          int                   `json:"elapsed_time"`
+	TotalElevationGain   float64               `json:"total_elevation_gain"` // in meters
+	ElevHigh             float64               `json:"elev_high"`
+	ElevLow              float64               `json:"elev_low"`
+	AverageHeartrate     float64               `json:"average_heartrate"`
+	MaxHeartrate         float64               `json:"max_heartrate"`
+	AverageCadence       float64               `json:"average_cadence"`
+	AverageSpeed         float64               `json:"average_speed"`
+	MaxSpeed             float64               `json:"max_speed"`
+	AverageWatts         float64               `json:"average_watts"`
+	MaxWatts             float64               `json:"max_watts"`
+	WeightedAverageWatts float64               `json:"weighted_average_watts"`
+	Kilojoules           float64               `json:"kilojoules"`
+	DeviceWatts          bool                  `json:"device_watts"`
+	Calories             float64               `json:"calories"`
+	AverageTemp          float64               `json:"average_temp"`
+	DeviceName           string                `json:"device_name"`
+	GearID               string                `json:"gear_id"`
+	Gear                 *GearInfo             `json:"gear"`
+	Map                  MapInfo               `json:"map"`
+	Streams              map[string]StreamInfo `json:"streams"`
+	SegmentEfforts       []SegmentEffort       `json:"segment_efforts"`
+	SplitsMetric         []SplitDetail         `json:"splits_metric"`
+	SplitsStandard       []SplitDetail         `json:"splits_standard"`
+	Laps                 []LapDetail           `json:"laps"`
+	BestEfforts          []BestEffortDetail    `json:"best_efforts"`
 }
 
 // IsShoeRelevant returns true if the activity is a foot-based sport (e.g. running, walking, hiking)
