@@ -17,6 +17,9 @@ type SyncOptions struct {
 	CheckUpdates bool
 	RecentWindow time.Duration
 	RefreshIDs   []int64
+	DataDir      string
+	ConfigDir    string
+	MetadataDir  string
 }
 
 // localActivityHeader represents the basic summary fields stored inside an existing activity JSON.
@@ -156,18 +159,31 @@ func SyncActivities(dir string, force bool) error {
 
 // SyncActivitiesWithOptions synchronizes activities with fine-grained control over updates and lookbacks.
 func SyncActivitiesWithOptions(dir string, opts SyncOptions) error {
+	dataDir := dir
+	if opts.DataDir != "" {
+		dataDir = opts.DataDir
+	}
+	configDir := opts.ConfigDir
+	if configDir == "" {
+		configDir = dataDir
+	}
+	metadataDir := opts.MetadataDir
+	if metadataDir == "" {
+		metadataDir = configDir
+	}
+
 	// 1. Load config and metadata
-	client, err := NewStravaClient(dir)
+	client, err := NewStravaClientWithFallback(configDir, dataDir)
 	if err != nil {
 		return err
 	}
 
-	meta, err := LoadMetadata(dir)
+	meta, err := LoadMetadataWithFallback(metadataDir, dataDir)
 	if err != nil {
 		return fmt.Errorf("failed to load metadata: %w", err)
 	}
 
-	activitiesDir := filepath.Join(dir, "activities")
+	activitiesDir := filepath.Join(dataDir, "activities")
 	if err := os.MkdirAll(activitiesDir, 0755); err != nil {
 		return fmt.Errorf("failed to create activities directory: %w", err)
 	}
@@ -355,7 +371,7 @@ func SyncActivitiesWithOptions(dir string, opts SyncOptions) error {
 		fmt.Printf("Sync completed with a partial failure. Not advancing last_activity_timestamp (remains: %d) so next sync can resume.\n", meta.LastActivityTimestamp)
 	}
 
-	if err := SaveMetadata(dir, meta); err != nil {
+	if err := SaveMetadata(metadataDir, meta); err != nil {
 		return fmt.Errorf("failed to save metadata: %w", err)
 	}
 

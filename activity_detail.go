@@ -175,7 +175,7 @@ func handleActivityDetailAPI(w http.ResponseWriter, r *http.Request) {
 		unit = getSystemUnit()
 	}
 
-	store := GetGlobalStore(daemon.dir)
+	store := GetGlobalStore(daemon.dataDir)
 	act, err := store.GetActivityDetailByID(id)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Activity %d not found: %v", id, err), http.StatusNotFound)

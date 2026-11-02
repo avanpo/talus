@@ -20,6 +20,11 @@ type TokenResponse struct {
 
 // RunTerminalOAuthFlow prompts the user in the terminal to authorize when running headlessly.
 func RunTerminalOAuthFlow(dir string, clientID string, clientSecret string) error {
+	return RunTerminalOAuthFlowWithDirs(dir, dir, clientID, clientSecret)
+}
+
+// RunTerminalOAuthFlowWithDirs prompts the user in the terminal to authorize, saving tokens in configDir and ensuring dataDir/activities exists.
+func RunTerminalOAuthFlowWithDirs(configDir, dataDir string, clientID string, clientSecret string) error {
 	if clientID == "" {
 		clientID = os.Getenv("STRAVA_CLIENT_ID")
 	}
@@ -73,10 +78,14 @@ func RunTerminalOAuthFlow(dir string, clientID string, clientSecret string) erro
 		return fmt.Errorf("invalid authorization code")
 	}
 
-	return exchangeAndSaveToken(dir, clientID, clientSecret, code)
+	return exchangeAndSaveTokenWithDirs(configDir, dataDir, clientID, clientSecret, code)
 }
 
 func exchangeAndSaveToken(dir string, clientID, clientSecret, code string) error {
+	return exchangeAndSaveTokenWithDirs(dir, dir, clientID, clientSecret, code)
+}
+
+func exchangeAndSaveTokenWithDirs(configDir, dataDir string, clientID, clientSecret, code string) error {
 	// Prepare token exchange request
 	tokenURL := "https://www.strava.com/oauth/token"
 	form := url.Values{}
@@ -102,12 +111,13 @@ func exchangeAndSaveToken(dir string, clientID, clientSecret, code string) error
 		return fmt.Errorf("failed to decode token response: %w", err)
 	}
 
-	// Create directory if it doesn't exist
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory %s: %w", dir, err)
+	// Create config directory if it doesn't exist
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return fmt.Errorf("failed to create config directory %s: %w", configDir, err)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "activities"), 0755); err != nil {
-		return fmt.Errorf("failed to create activities subdirectory: %w", err)
+	// Create activities directory in data directory
+	if err := os.MkdirAll(filepath.Join(dataDir, "activities"), 0755); err != nil {
+		return fmt.Errorf("failed to create activities subdirectory in %s: %w", dataDir, err)
 	}
 
 	cfg := &Config{
@@ -118,10 +128,10 @@ func exchangeAndSaveToken(dir string, clientID, clientSecret, code string) error
 		ExpiresAt:    time.Unix(tokResp.ExpiresAt, 0),
 	}
 
-	if err := SaveConfig(dir, cfg); err != nil {
+	if err := SaveConfig(configDir, cfg); err != nil {
 		return fmt.Errorf("failed to save configuration: %w", err)
 	}
 
-	fmt.Printf("Configuration and tokens successfully saved to %s\n", filepath.Join(dir, configFilename))
+	fmt.Printf("Configuration and tokens successfully saved to %s\n", filepath.Join(configDir, configFilename))
 	return nil
 }

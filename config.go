@@ -42,6 +42,20 @@ func LoadConfig(dir string) (*Config, error) {
 	return &cfg, nil
 }
 
+// LoadConfigWithFallback tries loading config from configDir, falling back to fallbackDir if not found.
+func LoadConfigWithFallback(configDir, fallbackDir string) (*Config, error) {
+	cfg, err := LoadConfig(configDir)
+	if err == nil {
+		return cfg, nil
+	}
+	if fallbackDir != "" && fallbackDir != configDir {
+		if fallbackCfg, err2 := LoadConfig(fallbackDir); err2 == nil {
+			return fallbackCfg, nil
+		}
+	}
+	return nil, err
+}
+
 // SaveConfig writes the configuration file to the backup directory.
 func SaveConfig(dir string, cfg *Config) error {
 	path := filepath.Join(dir, configFilename)
@@ -69,6 +83,23 @@ func LoadMetadata(dir string) (*Metadata, error) {
 		return nil, err
 	}
 	return &meta, nil
+}
+
+// LoadMetadataWithFallback tries loading metadata from metadataDir, falling back to fallbackDir if not found or empty.
+func LoadMetadataWithFallback(metadataDir, fallbackDir string) (*Metadata, error) {
+	meta, err := LoadMetadata(metadataDir)
+	if err == nil && (meta.TotalActivities > 0 || meta.LastActivityTimestamp > 0) {
+		return meta, nil
+	}
+	if fallbackDir != "" && fallbackDir != metadataDir {
+		if fallbackMeta, err2 := LoadMetadata(fallbackDir); err2 == nil && (fallbackMeta.TotalActivities > 0 || fallbackMeta.LastActivityTimestamp > 0) {
+			return fallbackMeta, nil
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return meta, nil
 }
 
 // SaveMetadata writes the sync metadata to the backup directory.

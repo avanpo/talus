@@ -24,7 +24,10 @@ var webFS embed.FS
 
 // SyncDaemon manages continuous background synchronizations and state.
 type SyncDaemon struct {
-	dir                  string
+	dir                  string // alias for dataDir (backwards compatibility)
+	dataDir              string
+	configDir            string
+	metadataDir          string
 	syncInterval         time.Duration
 	checkUpdatesInterval time.Duration
 	noSync               bool
@@ -50,9 +53,42 @@ func isConfigured(dir string) bool {
 	return err == nil
 }
 
+func isDaemonConfigured(d *SyncDaemon) bool {
+	if d == nil {
+		return false
+	}
+	if isConfigured(d.configDir) {
+		return true
+	}
+	if d.dataDir != "" && d.dataDir != d.configDir && isConfigured(d.dataDir) {
+		return true
+	}
+	return false
+}
+
 func newSyncDaemon(dir string, syncInterval, checkUpdatesInterval time.Duration, noSync bool) *SyncDaemon {
+	return newSyncDaemonWithDirs(dir, "", "", syncInterval, checkUpdatesInterval, noSync)
+}
+
+func newSyncDaemonWithDirs(dataDir, configDir, metadataDir string, syncInterval, checkUpdatesInterval time.Duration, noSync bool) *SyncDaemon {
+	if configDir == "" {
+		configDir = os.Getenv("CONFIG_DIR")
+		if configDir == "" {
+			configDir = dataDir
+		}
+	}
+	if metadataDir == "" {
+		metadataDir = os.Getenv("METADATA_DIR")
+		if metadataDir == "" {
+			metadataDir = configDir
+		}
+	}
+
 	d := &SyncDaemon{
-		dir:                  dir,
+		dir:                  dataDir,
+		dataDir:              dataDir,
+		configDir:            configDir,
+		metadataDir:          metadataDir,
 		syncInterval:         syncInterval,
 		checkUpdatesInterval: checkUpdatesInterval,
 		noSync:               noSync,
@@ -60,8 +96,8 @@ func newSyncDaemon(dir string, syncInterval, checkUpdatesInterval time.Duration,
 		configNotifyCh:       make(chan struct{}, 1),
 	}
 
-	// Read initial metadata if available
-	meta, err := LoadMetadata(dir)
+	// Read initial metadata if available (trying metadataDir first, then fallback to dataDir)
+	meta, err := LoadMetadataWithFallback(metadataDir, dataDir)
 	if err == nil {
 		d.lastSyncTime = meta.LastSyncTime
 		d.totalActivities = meta.TotalActivities
@@ -102,7 +138,7 @@ func (d *SyncDaemon) Start() {
 
 	go func() {
 		// If unconfigured at launch, wait in background until configuration appears
-		if !isConfigured(d.dir) {
+		if !isDaemonConfigured(d) {
 			log.Println("[Daemon] No config file found. Waiting for Strava authorization...")
 			pollTicker := time.NewTicker(5 * time.Second)
 			defer pollTicker.Stop()
@@ -111,11 +147,11 @@ func (d *SyncDaemon) Start() {
 			for !configured {
 				select {
 				case <-pollTicker.C:
-					if isConfigured(d.dir) {
+					if isDaemonConfigured(d) {
 						configured = true
 					}
 				case <-d.configNotifyCh:
-					if isConfigured(d.dir) {
+					if isDaemonConfigured(d) {
 						configured = true
 					}
 				case <-d.stopCh:
@@ -191,7 +227,9 @@ func (d *SyncDaemon) runSync(opts SyncOptions, reason string) {
 
 	log.Printf("[Daemon] >>> Starting %s...\n", reason)
 	startTime := time.Now()
-	err := SyncActivitiesWithOptions(d.dir, opts)
+	opts.ConfigDir = d.configDir
+	opts.MetadataDir = d.metadataDir
+	err := SyncActivitiesWithOptions(d.dataDir, opts)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -203,11 +241,11 @@ func (d *SyncDaemon) runSync(opts SyncOptions, reason string) {
 		log.Printf("[Daemon] !!! Sync failed (%s): %v (took %v)\n", reason, err, time.Since(startTime).Round(time.Second))
 	} else {
 		d.lastSyncErr = ""
-		meta, metaErr := LoadMetadata(d.dir)
+		meta, metaErr := LoadMetadataWithFallback(d.metadataDir, d.dataDir)
 		if metaErr == nil {
 			d.totalActivities = meta.TotalActivities
 		}
-		_ = GetGlobalStore(d.dir).ReloadIfNeeded()
+		_ = GetGlobalStore(d.dataDir).ReloadIfNeeded()
 		d.lastSyncSummary = fmt.Sprintf("Completed successfully in %v", time.Since(startTime).Round(time.Second))
 		log.Printf("[Daemon] <<< Sync completed successfully (%s, took %v)\n", reason, time.Since(startTime).Round(time.Second))
 	}
@@ -890,7 +928,7 @@ type SetupPageData struct {
 }
 
 func handleSetupPage(w http.ResponseWriter, r *http.Request) {
-	if isConfigured(daemon.dir) {
+	if isDaemonConfigured(daemon) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
@@ -972,7 +1010,7 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := exchangeAndSaveToken(daemon.dir, clientID, clientSecret, code)
+	err := exchangeAndSaveTokenWithDirs(daemon.configDir, daemon.dataDir, clientID, clientSecret, code)
 	if err != nil {
 		http.Redirect(w, r, "/setup?error="+url.QueryEscape("Authorization failed: "+err.Error()), http.StatusSeeOther)
 		return
@@ -1009,7 +1047,7 @@ func serveHTMLFile(w http.ResponseWriter, relPath string) {
 }
 
 func handleVolumePage(w http.ResponseWriter, r *http.Request) {
-	if !isConfigured(daemon.dir) {
+	if !isDaemonConfigured(daemon) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
@@ -1022,7 +1060,7 @@ func handleVolumePage(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleActivitiesPage(w http.ResponseWriter, r *http.Request) {
-	if !isConfigured(daemon.dir) {
+	if !isDaemonConfigured(daemon) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
@@ -1031,7 +1069,7 @@ func handleActivitiesPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleProgressPage(w http.ResponseWriter, r *http.Request) {
-	if !isConfigured(daemon.dir) {
+	if !isDaemonConfigured(daemon) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
@@ -1218,7 +1256,12 @@ func handleActivitiesAPI(w http.ResponseWriter, r *http.Request) {
 
 // StartWebServer starts the HTTP server and sync daemon.
 func StartWebServer(dir string, port int, syncInterval, checkUpdatesInterval time.Duration, noSync bool) error {
-	daemon = newSyncDaemon(dir, syncInterval, checkUpdatesInterval, noSync)
+	return StartWebServerWithDirs(dir, "", "", port, syncInterval, checkUpdatesInterval, noSync)
+}
+
+// StartWebServerWithDirs starts the HTTP server and sync daemon with separate data, config, and metadata directories.
+func StartWebServerWithDirs(dataDir, configDir, metadataDir string, port int, syncInterval, checkUpdatesInterval time.Duration, noSync bool) error {
+	daemon = newSyncDaemonWithDirs(dataDir, configDir, metadataDir, syncInterval, checkUpdatesInterval, noSync)
 	daemon.Start()
 	defer daemon.Stop()
 
@@ -1256,13 +1299,19 @@ func StartWebServer(dir string, port int, syncInterval, checkUpdatesInterval tim
 	}()
 
 	log.Printf("[Server] talus web dashboard running at http://localhost:%d\n", port)
-	log.Printf("[Server] Data directory: %s\n", dir)
+	log.Printf("[Server] Data directory: %s\n", daemon.dataDir)
+	if daemon.configDir != daemon.dataDir {
+		log.Printf("[Server] Config directory (OAuth tokens): %s\n", daemon.configDir)
+	}
+	if daemon.metadataDir != daemon.configDir && daemon.metadataDir != daemon.dataDir {
+		log.Printf("[Server] Metadata directory: %s\n", daemon.metadataDir)
+	}
 
 	// Warm up memory cache in background on startup
 	go func() {
 		startTime := time.Now()
-		if err := GetGlobalStore(dir).ReloadIfNeeded(); err == nil {
-			store := GetGlobalStore(dir)
+		if err := GetGlobalStore(daemon.dataDir).ReloadIfNeeded(); err == nil {
+			store := GetGlobalStore(daemon.dataDir)
 			store.mu.RLock()
 			count := len(store.activities)
 			store.mu.RUnlock()

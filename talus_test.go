@@ -517,3 +517,180 @@ func TestSyncActivities_Force(t *testing.T) {
 	}
 }
 
+func TestSeparatedDirectories_SyncAndStore(t *testing.T) {
+	// Create three separate directories: dataDir, configDir, metadataDir
+	dataDir, err := os.MkdirTemp("", "talus-data-*")
+	if err != nil {
+		t.Fatalf("failed to create data dir: %v", err)
+	}
+	defer os.RemoveAll(dataDir)
+
+	configDir, err := os.MkdirTemp("", "talus-config-*")
+	if err != nil {
+		t.Fatalf("failed to create config dir: %v", err)
+	}
+	defer os.RemoveAll(configDir)
+
+	metadataDir, err := os.MkdirTemp("", "talus-meta-*")
+	if err != nil {
+		t.Fatalf("failed to create metadata dir: %v", err)
+	}
+	defer os.RemoveAll(metadataDir)
+
+	// Save OAuth config ONLY in configDir
+	cfg := &Config{
+		ClientID:     "client123",
+		ClientSecret: "secret456",
+		AccessToken:  "valid_access_token",
+		RefreshToken: "valid_refresh_token",
+		ExpiresAt:    time.Now().Add(10 * time.Hour),
+	}
+	if err := SaveConfig(configDir, cfg); err != nil {
+		t.Fatalf("failed to save config to configDir: %v", err)
+	}
+
+	// Verify dataDir does NOT have config
+	if _, err := LoadConfig(dataDir); err == nil {
+		t.Fatalf("dataDir should not have config file")
+	}
+
+	// Mock Strava API to return 1 activity
+	testTransport = &MockRoundTripper{
+		RoundTripFunc: func(req *http.Request) (*http.Response, error) {
+			if req.URL.Path == "/api/v3/athlete/activities" {
+				if req.URL.Query().Get("page") == "1" {
+					jsonBody := `[
+						{
+							"id": 9001,
+							"name": "Trail Run on Separate Data Volume",
+							"distance": 8500.0,
+							"moving_time": 2700,
+							"elapsed_time": 2800,
+							"total_elevation_gain": 320.0,
+							"type": "Run",
+							"sport_type": "TrailRun",
+							"start_date": "2026-05-10T14:00:00Z"
+						}
+					]`
+					return &http.Response{
+						StatusCode: 200,
+						Body:       io.NopCloser(bytes.NewBufferString(jsonBody)),
+						Header:     make(http.Header),
+					}, nil
+				}
+				return &http.Response{
+					StatusCode: 200,
+					Body:       io.NopCloser(bytes.NewBufferString("[]")),
+					Header:     make(http.Header),
+				}, nil
+			}
+			if req.URL.Path == "/api/v3/activities/9001" {
+				detailJSON := `{
+					"id": 9001,
+					"name": "Trail Run on Separate Data Volume",
+					"distance": 8500.0,
+					"moving_time": 2700,
+					"elapsed_time": 2800,
+					"total_elevation_gain": 320.0,
+					"type": "Run",
+					"sport_type": "TrailRun",
+					"start_date": "2026-05-10T14:00:00Z"
+				}`
+				return &http.Response{
+					StatusCode: 200,
+					Body:       io.NopCloser(bytes.NewBufferString(detailJSON)),
+					Header:     make(http.Header),
+				}, nil
+			}
+			if req.URL.Path == "/api/v3/activities/9001/streams" {
+				return &http.Response{
+					StatusCode: 200,
+					Body:       io.NopCloser(bytes.NewBufferString(`null`)),
+					Header:     make(http.Header),
+				}, nil
+			}
+			return &http.Response{StatusCode: 404}, nil
+		},
+	}
+	defer func() { testTransport = nil }()
+
+	// Execute sync with separate directories
+	opts := SyncOptions{
+		DataDir:     dataDir,
+		ConfigDir:   configDir,
+		MetadataDir: metadataDir,
+	}
+	if err := SyncActivitiesWithOptions(dataDir, opts); err != nil {
+		t.Fatalf("SyncActivitiesWithOptions failed: %v", err)
+	}
+
+	// 1. Check raw JSON data was saved to dataDir/activities/9001.json
+	actFile := filepath.Join(dataDir, "activities", "9001.json")
+	if _, err := os.Stat(actFile); err != nil {
+		t.Fatalf("expected raw activity JSON to exist at %s: %v", actFile, err)
+	}
+
+	// 2. Check metadata was saved in metadataDir
+	metaFile := filepath.Join(metadataDir, "metadata.json")
+	if _, err := os.Stat(metaFile); err != nil {
+		t.Fatalf("expected metadata to exist at %s: %v", metaFile, err)
+	}
+	meta, err := LoadMetadata(metadataDir)
+	if err != nil || meta.TotalActivities != 1 {
+		t.Errorf("expected metadata in metadataDir to have 1 total activity, got: %+v (err: %v)", meta, err)
+	}
+
+	// 3. Check dataDir does NOT contain metadata.json or .talus-config.json
+	if _, err := os.Stat(filepath.Join(dataDir, "metadata.json")); err == nil {
+		t.Errorf("metadata.json should NOT be present in dataDir when metadataDir is separated")
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, ".talus-config.json")); err == nil {
+		t.Errorf(".talus-config.json should NOT be present in dataDir when configDir is separated")
+	}
+
+	// 4. Verify ActivityStore loads from dataDir
+	store := GetGlobalStore(dataDir)
+	acts, total, err := store.GetActivities(10, "all", "")
+	if err != nil {
+		t.Fatalf("store.GetActivities failed: %v", err)
+	}
+	if total != 1 || len(acts) != 1 || acts[0].ID != 9001 {
+		t.Errorf("expected store to load activity 9001 from dataDir, got %d activities", len(acts))
+	}
+}
+
+func TestResolveDirectories(t *testing.T) {
+	// Case 1: Positional arg only
+	data, config, meta := resolveDirectories("/pos/path", "", "", "")
+	if data != "/pos/path" || config != "/pos/path" || meta != "/pos/path" {
+		t.Errorf("expected all dirs to match positional path, got data=%s config=%s meta=%s", data, config, meta)
+	}
+
+	// Case 2: Separate config-dir flag
+	data, config, meta = resolveDirectories("/pos/path", "", "/my/config", "")
+	if data != "/pos/path" || config != "/my/config" || meta != "/my/config" {
+		t.Errorf("expected config and meta to match flag, got data=%s config=%s meta=%s", data, config, meta)
+	}
+
+	// Case 3: Explicit data-dir, config-dir, metadata-dir flags
+	data, config, meta = resolveDirectories("", "/custom/data", "/custom/config", "/custom/meta")
+	if data != "/custom/data" || config != "/custom/config" || meta != "/custom/meta" {
+		t.Errorf("expected custom dirs, got data=%s config=%s meta=%s", data, config, meta)
+	}
+
+	// Case 4: Environment variables
+	os.Setenv("DATA_DIR", "/env/data")
+	os.Setenv("CONFIG_DIR", "/env/config")
+	os.Setenv("METADATA_DIR", "/env/meta")
+	defer func() {
+		os.Unsetenv("DATA_DIR")
+		os.Unsetenv("CONFIG_DIR")
+		os.Unsetenv("METADATA_DIR")
+	}()
+
+	data, config, meta = resolveDirectories("", "", "", "")
+	if data != "/env/data" || config != "/env/config" || meta != "/env/meta" {
+		t.Errorf("expected env dirs, got data=%s config=%s meta=%s", data, config, meta)
+	}
+}
+

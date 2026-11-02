@@ -82,6 +82,43 @@ func parseIDs(s string) ([]int64, error) {
 	return ids, nil
 }
 
+func resolveDirectories(posArg, flagDataDir, flagConfigDir, flagMetadataDir string) (string, string, string) {
+	dataDir := flagDataDir
+	if dataDir == "" {
+		if posArg != "" {
+			dataDir = posArg
+		} else if envData := os.Getenv("DATA_DIR"); envData != "" {
+			dataDir = envData
+		} else {
+			if _, err := os.Stat("/data"); err == nil {
+				dataDir = "/data"
+			} else {
+				dataDir = "."
+			}
+		}
+	}
+
+	configDir := flagConfigDir
+	if configDir == "" {
+		if envConfig := os.Getenv("CONFIG_DIR"); envConfig != "" {
+			configDir = envConfig
+		} else {
+			configDir = dataDir
+		}
+	}
+
+	metadataDir := flagMetadataDir
+	if metadataDir == "" {
+		if envMeta := os.Getenv("METADATA_DIR"); envMeta != "" {
+			metadataDir = envMeta
+		} else {
+			metadataDir = configDir
+		}
+	}
+
+	return dataDir, configDir, metadataDir
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		runServe(nil)
@@ -102,24 +139,27 @@ func main() {
 		refresh := syncCmd.String("refresh", "", "Comma-separated list of specific activity IDs to force re-download")
 		clientID := syncCmd.String("client-id", "", "Strava API Client ID (if not authorized yet)")
 		clientSecret := syncCmd.String("client-secret", "", "Strava API Client Secret (if not authorized yet)")
+		dataDirFlag := syncCmd.String("data-dir", "", "Directory for storing raw activity JSON files (or $DATA_DIR)")
+		configDirFlag := syncCmd.String("config-dir", "", "Directory for storing OAuth credentials and tokens (or $CONFIG_DIR)")
+		metadataDirFlag := syncCmd.String("metadata-dir", "", "Directory for storing sync metadata (or $METADATA_DIR, defaults to config dir)")
 
 		flagsWithArgs := map[string]bool{
 			"recent": true, "refresh": true, "client-id": true, "client-secret": true,
+			"data-dir": true, "config-dir": true, "metadata-dir": true,
 		}
 		_ = syncCmd.Parse(reorderArgs(flagsWithArgs, os.Args[2:]))
 
 		args := syncCmd.Args()
-		backupDir := "."
+		posArg := ""
 		if len(args) >= 1 {
-			backupDir = args[0]
-		} else if envDir := os.Getenv("DATA_DIR"); envDir != "" {
-			backupDir = envDir
+			posArg = args[0]
 		}
+		dataDir, configDir, metadataDir := resolveDirectories(posArg, *dataDirFlag, *configDirFlag, *metadataDirFlag)
 
 		// Auto-initialize if not configured yet
-		if !isConfigured(backupDir) {
-			fmt.Printf("No configuration found in %s. Running one-time setup...\n", backupDir)
-			err := RunTerminalOAuthFlow(backupDir, *clientID, *clientSecret)
+		if !isConfigured(configDir) && !isConfigured(dataDir) {
+			fmt.Printf("No configuration found in %s. Running one-time setup...\n", configDir)
+			err := RunTerminalOAuthFlowWithDirs(configDir, dataDir, *clientID, *clientSecret)
 			if err != nil {
 				fmt.Printf("Setup failed: %v\n", err)
 				os.Exit(1)
@@ -147,10 +187,13 @@ func main() {
 			CheckUpdates: *checkUpdates,
 			RecentWindow: recentDuration,
 			RefreshIDs:   refreshIDs,
+			DataDir:      dataDir,
+			ConfigDir:    configDir,
+			MetadataDir:  metadataDir,
 		}
 
-		fmt.Printf("Starting synchronization for %s...\n", backupDir)
-		err = SyncActivitiesWithOptions(backupDir, opts)
+		fmt.Printf("Starting synchronization for %s...\n", dataDir)
+		err = SyncActivitiesWithOptions(dataDir, opts)
 		if err != nil {
 			fmt.Printf("Error running synchronization: %v\n", err)
 			os.Exit(1)
@@ -172,25 +215,22 @@ func runServe(rawArgs []string) {
 	syncIntervalStr := serveCmd.String("sync-interval", "1h", "Interval between incremental syncs (e.g. 1h, 30m, or use $SYNC_INTERVAL)")
 	checkUpdatesIntervalStr := serveCmd.String("check-updates-interval", "24h", "Interval between update scans (e.g. 24h, 12h, or use $CHECK_UPDATES_INTERVAL)")
 	noSync := serveCmd.Bool("no-sync", false, "Disable background sync daemon")
+	dataDirFlag := serveCmd.String("data-dir", "", "Directory for storing raw activity JSON files (or $DATA_DIR)")
+	configDirFlag := serveCmd.String("config-dir", "", "Directory for storing OAuth credentials and tokens (or $CONFIG_DIR)")
+	metadataDirFlag := serveCmd.String("metadata-dir", "", "Directory for storing sync metadata (or $METADATA_DIR, defaults to config dir)")
 
 	flagsWithArgs := map[string]bool{
 		"port": true, "sync-interval": true, "check-updates-interval": true,
+		"data-dir": true, "config-dir": true, "metadata-dir": true,
 	}
 	_ = serveCmd.Parse(reorderArgs(flagsWithArgs, rawArgs))
 
 	args := serveCmd.Args()
-	backupDir := ""
+	posArg := ""
 	if len(args) >= 1 {
-		backupDir = args[0]
-	} else if envDir := os.Getenv("DATA_DIR"); envDir != "" {
-		backupDir = envDir
-	} else {
-		if _, err := os.Stat("/data"); err == nil {
-			backupDir = "/data"
-		} else {
-			backupDir = "."
-		}
+		posArg = args[0]
 	}
+	dataDir, configDir, metadataDir := resolveDirectories(posArg, *dataDirFlag, *configDirFlag, *metadataDirFlag)
 
 	if envPort := os.Getenv("PORT"); envPort != "" {
 		if p, err := strconv.Atoi(envPort); err == nil {
@@ -215,7 +255,7 @@ func runServe(rawArgs []string) {
 		os.Exit(1)
 	}
 
-	err = StartWebServer(backupDir, *port, syncInterval, checkUpdatesInterval, *noSync)
+	err = StartWebServerWithDirs(dataDir, configDir, metadataDir, *port, syncInterval, checkUpdatesInterval, *noSync)
 	if err != nil {
 		fmt.Printf("Error running server: %v\n", err)
 		os.Exit(1)
@@ -228,6 +268,11 @@ func printUsageAndExit() {
 	fmt.Println("Usage:")
 	fmt.Println("  talus [backup_dir] [flags]       Start web dashboard & background sync daemon (default)")
 	fmt.Println("  talus sync [backup_dir] [flags]  Run a one-off headless synchronization")
+	fmt.Println()
+	fmt.Println("Directory flags:")
+	fmt.Println("  --data-dir <path>                Directory for raw activity JSON data (default: [backup_dir] or $DATA_DIR)")
+	fmt.Println("  --config-dir <path>              Directory for OAuth tokens and credentials (default: $CONFIG_DIR or data dir)")
+	fmt.Println("  --metadata-dir <path>            Directory for sync metadata (default: $METADATA_DIR or config dir)")
 	fmt.Println()
 	fmt.Println("Server flags (talus / talus serve):")
 	fmt.Println("  --port <port>                    Port to listen on (default: 8080 or $PORT)")

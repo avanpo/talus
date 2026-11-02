@@ -17,13 +17,25 @@ It runs continuously as a lightweight service on your home server, incrementally
 
 ### 2. Run the Container
 
-#### With `docker run`:
+#### With `docker run` (unified or separated directories):
 ```bash
+# Standard unified volume:
 docker run -d \
   --name talus \
   --restart unless-stopped \
   -p 8080:8080 \
   -v ~/talus-data:/data \
+  talus
+
+# Or separate data directory from metadata and OAuth tokens:
+docker run -d \
+  --name talus \
+  --restart unless-stopped \
+  -p 8080:8080 \
+  -v /mnt/fast-storage/talus-config:/config \
+  -v /mnt/bulk-storage/talus-data:/data \
+  -e CONFIG_DIR=/config \
+  -e DATA_DIR=/data \
   talus
 ```
 
@@ -37,9 +49,12 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ~/talus-data:/data
+      - /mnt/storage/activities:/data      # Raw JSON activity data
+      - ~/.config/talus:/config          # OAuth credentials & sync metadata
     environment:
       - PORT=8080
+      - DATA_DIR=/data
+      - CONFIG_DIR=/config
       - SYNC_INTERVAL=1h              # Hourly incremental backup
       - CHECK_UPDATES_INTERVAL=24h     # Daily scan for title edits, crops, gear changes
 ```
@@ -59,11 +74,17 @@ services:
 You can also run Talus directly without Docker:
 
 ```bash
-# Run web dashboard & background daemon:
+# Run web dashboard & background daemon (unified directory):
 go run . /path/to/data
+
+# Run web dashboard with separated data, config (OAuth tokens), and metadata directories:
+go run . --data-dir /path/to/activities --config-dir /path/to/config --metadata-dir /path/to/metadata
 
 # Run a one-off headless sync (prompts for setup if unconfigured):
 go run . sync /path/to/data
+
+# Headless sync with separate data and config directories:
+go run . sync --data-dir /path/to/activities --config-dir /path/to/config
 
 # Scan recent activities for Strava edits / title changes / crops:
 go run . sync /path/to/data --recent 30d
@@ -81,7 +102,9 @@ go run . sync /path/to/data --force
 | `PORT` | `8080` | HTTP port for the web dashboard and API. |
 | `SYNC_INTERVAL` | `1h` | Interval between incremental sync checks for new activities. |
 | `CHECK_UPDATES_INTERVAL` | `24h` | Interval between scans detecting Strava edits, crops, and gear changes. |
-| `DATA_DIR` | `/data` | Path to persistent directory holding `.talus-config.json` and activities. |
+| `DATA_DIR` | `/data` | Path to directory where raw activity JSON files (`activities/`) are stored. |
+| `CONFIG_DIR` | `$DATA_DIR` | Path to directory where OAuth credentials and tokens (`.talus-config.json`) are stored. |
+| `METADATA_DIR` | `$CONFIG_DIR` | Path to directory where sync metadata (`metadata.json`) is stored. |
 | `STRAVA_CLIENT_ID` | `""` | Optional: prefill Client ID in setup page. |
 | `STRAVA_CLIENT_SECRET` | `""` | Optional: prefill Client Secret in setup page. |
 

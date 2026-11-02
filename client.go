@@ -50,9 +50,10 @@ type StravaClient struct {
 
 var testTransport http.RoundTripper // Hook for unit tests to mock network requests
 
-// NewStravaClient creates a new Strava client and automatically handles token refresh if needed.
-func NewStravaClient(configDir string) (*StravaClient, error) {
-	cfg, err := LoadConfig(configDir)
+// NewStravaClientWithFallback creates a new Strava client, trying configDir first and fallbackDir second.
+// Refreshed tokens are always saved back to configDir.
+func NewStravaClientWithFallback(configDir, fallbackDir string) (*StravaClient, error) {
+	cfg, err := LoadConfigWithFallback(configDir, fallbackDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config (have you run 'init'?): %w", err)
 	}
@@ -72,6 +73,11 @@ func NewStravaClient(configDir string) (*StravaClient, error) {
 	}
 
 	return client, nil
+}
+
+// NewStravaClient creates a new Strava client and automatically handles token refresh if needed.
+func NewStravaClient(configDir string) (*StravaClient, error) {
+	return NewStravaClientWithFallback(configDir, "")
 }
 
 func (c *StravaClient) updateRateLimits(resp *http.Response) {

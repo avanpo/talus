@@ -1039,3 +1039,123 @@ func TestServer_ActivitySearchAndDetail(t *testing.T) {
 		t.Errorf("activities page missing activityDetailView container")
 	}
 }
+
+func TestServer_SeparatedDirectories(t *testing.T) {
+	dataDir, err := os.MkdirTemp("", "talus-srv-data-*")
+	if err != nil {
+		t.Fatalf("failed to create dataDir: %v", err)
+	}
+	defer os.RemoveAll(dataDir)
+
+	configDir, err := os.MkdirTemp("", "talus-srv-config-*")
+	if err != nil {
+		t.Fatalf("failed to create configDir: %v", err)
+	}
+	defer os.RemoveAll(configDir)
+
+	metadataDir, err := os.MkdirTemp("", "talus-srv-meta-*")
+	if err != nil {
+		t.Fatalf("failed to create metadataDir: %v", err)
+	}
+	defer os.RemoveAll(metadataDir)
+
+	// Initially unconfigured
+	dUncfg := newSyncDaemonWithDirs(dataDir, configDir, metadataDir, time.Hour, 24*time.Hour, true)
+	if isDaemonConfigured(dUncfg) {
+		t.Errorf("expected isDaemonConfigured to be false for empty configDir")
+	}
+
+	daemon = dUncfg
+	reqSetupCheck := httptest.NewRequest(http.MethodGet, "/", nil)
+	wSetupCheck := httptest.NewRecorder()
+	handleVolumePage(wSetupCheck, reqSetupCheck)
+	if wSetupCheck.Code != http.StatusSeeOther {
+		t.Errorf("expected redirect to /setup when unconfigured, got %d", wSetupCheck.Code)
+	}
+
+	// Now configure: Save config in configDir
+	cfg := &Config{
+		ClientID:     "srv_client_id",
+		ClientSecret: "srv_client_secret",
+		AccessToken:  "valid_tok",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	if err := SaveConfig(configDir, cfg); err != nil {
+		t.Fatalf("failed to save config: %v", err)
+	}
+
+	// Save metadata in metadataDir
+	meta := &Metadata{
+		LastActivityTimestamp: 1700000000,
+		LastSyncTime:          time.Now(),
+		TotalActivities:       1,
+	}
+	if err := SaveMetadata(metadataDir, meta); err != nil {
+		t.Fatalf("failed to save metadata: %v", err)
+	}
+
+	// Save an activity in dataDir/activities/7001.json
+	activitiesDir := filepath.Join(dataDir, "activities")
+	_ = os.MkdirAll(activitiesDir, 0755)
+	act := ActivityDetail{
+		ID:                 7001,
+		Name:               "Run from Separated Data Dir",
+		Type:               "Run",
+		SportType:          "Run",
+		StartDate:          time.Date(2026, 5, 20, 8, 0, 0, 0, time.UTC),
+		Distance:           10000.0,
+		MovingTime:         3000,
+		TotalElevationGain: 100.0,
+	}
+	actData, _ := json.Marshal(act)
+	_ = os.WriteFile(filepath.Join(activitiesDir, "7001.json"), actData, 0644)
+
+	dConfigured := newSyncDaemonWithDirs(dataDir, configDir, metadataDir, time.Hour, 24*time.Hour, true)
+	daemon = dConfigured
+
+	if !isDaemonConfigured(daemon) {
+		t.Errorf("expected isDaemonConfigured to be true when config is in configDir")
+	}
+
+	// Status API reads metadata from metadataDir
+	reqStatus := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	wStatus := httptest.NewRecorder()
+	handleStatusAPI(wStatus, reqStatus)
+	if wStatus.Code != http.StatusOK {
+		t.Fatalf("expected 200 from status API, got %d", wStatus.Code)
+	}
+	var statusResp DaemonStatusJSON
+	_ = json.Unmarshal(wStatus.Body.Bytes(), &statusResp)
+	if statusResp.TotalActivities != 1 {
+		t.Errorf("expected 1 total activity in status API, got %d", statusResp.TotalActivities)
+	}
+
+	// Activities API reads activity from dataDir
+	reqActs := httptest.NewRequest(http.MethodGet, "/api/activities", nil)
+	wActs := httptest.NewRecorder()
+	handleActivitiesAPI(wActs, reqActs)
+	if wActs.Code != http.StatusOK {
+		t.Fatalf("expected 200 from activities API, got %d", wActs.Code)
+	}
+	var actsResp ActivitiesResponseJSON
+	_ = json.Unmarshal(wActs.Body.Bytes(), &actsResp)
+	if actsResp.Total != 1 || len(actsResp.Activities) != 1 || actsResp.Activities[0].ID != 7001 {
+		t.Errorf("expected activities API to load activity 7001 from dataDir, got %+v", actsResp)
+	}
+
+	// Volume page should render 200 now
+	reqVol := httptest.NewRequest(http.MethodGet, "/", nil)
+	wVol := httptest.NewRecorder()
+	handleVolumePage(wVol, reqVol)
+	if wVol.Code != http.StatusOK {
+		t.Errorf("expected 200 for volume page when configured, got %d", wVol.Code)
+	}
+
+	// Verify no config or metadata file was written to dataDir
+	if _, err := os.Stat(filepath.Join(dataDir, ".talus-config.json")); err == nil {
+		t.Errorf(".talus-config.json should not exist in dataDir")
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "metadata.json")); err == nil {
+		t.Errorf("metadata.json should not exist in dataDir")
+	}
+}
