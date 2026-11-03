@@ -1230,7 +1230,7 @@ func handleActivitiesAPI(w http.ResponseWriter, r *http.Request) {
 			Type:           act.Type,
 			SportType:      sportName,
 			StartDate:      act.StartDate.Format(time.RFC3339),
-			StartDateFmt:   act.StartDate.Format("Jan 02, 2006"),
+			StartDateFmt:   act.LocalStartTime().Format("Jan 02, 2006"),
 			Distance:       math.Round(dist*100) / 100,
 			DistanceFmt:    distFmt,
 			Elevation:      math.Round(elev),

@@ -135,6 +135,20 @@ type ActivityDetail struct {
 	BestEfforts          []BestEffortDetail    `json:"best_efforts"`
 }
 
+// LocalStartTime returns the activity's local wall-clock start time. Strava
+// encodes StartDateLocal as RFC3339 with a trailing "Z" that does not mean
+// UTC; it just carries the local wall-clock time with no offset, so parsing
+// it as RFC3339 yields the correct local hour and date. If StartDateLocal is
+// missing or fails to parse, it falls back to the UTC StartDate.
+func (act *ActivityDetail) LocalStartTime() time.Time {
+	if act.StartDateLocal != "" {
+		if t, err := time.Parse(time.RFC3339, act.StartDateLocal); err == nil {
+			return t
+		}
+	}
+	return act.StartDate
+}
+
 // IsShoeRelevant returns true if the activity is a foot-based sport (e.g. running, walking, hiking)
 // or if the attached gear ID represents a shoe.
 func IsShoeRelevant(act *ActivityDetail) bool {
