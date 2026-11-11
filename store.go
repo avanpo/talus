@@ -242,8 +242,9 @@ func (s *ActivityStore) ReloadIfNeeded() error {
 		if item.runStats != nil {
 			runs = append(runs, item.runStats)
 		}
-		if item.activity.StartDate.Year() > 1970 {
-			yearsMap[item.activity.StartDate.Year()] = true
+		localYear := item.activity.LocalStartTime().Year()
+		if localYear > 1970 {
+			yearsMap[localYear] = true
 		}
 	}
 
@@ -440,6 +441,9 @@ func (s *ActivityStore) ReloadIfNeeded() error {
 				SegmentID:           segID,
 				SegmentName:         segName,
 				StartDate:           eff.StartDate,
+				StartDateLocal:      eff.StartDateLocal,
+				Timezone:            act.Timezone,
+				UtcOffset:           act.UtcOffset,
 				Distance:            dist,
 				MovingTime:          movingTime,
 				ElapsedTime:         eff.ElapsedTime,

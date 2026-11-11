@@ -41,6 +41,7 @@ type SegmentEffort struct {
 	ElapsedTime      int            `json:"elapsed_time"`
 	MovingTime       int            `json:"moving_time"`
 	StartDate        time.Time      `json:"start_date"`
+	StartDateLocal   string         `json:"start_date_local"`
 	Distance         float64        `json:"distance"`
 	AverageHeartrate float64        `json:"average_heartrate"`
 	MaxHeartrate     float64        `json:"max_heartrate"`
@@ -105,6 +106,7 @@ type ActivityDetail struct {
 	StartDate            time.Time             `json:"start_date"`
 	StartDateLocal       string                `json:"start_date_local"`
 	Timezone             string                `json:"timezone"`
+	UtcOffset            float64               `json:"utc_offset"`
 	Distance             float64               `json:"distance"` // in meters
 	MovingTime           int                   `json:"moving_time"` // in seconds
 	ElapsedTime          int                   `json:"elapsed_time"`
@@ -168,6 +170,134 @@ func (act *ActivityDetail) ShoeName() string {
 		return act.GearID
 	}
 	return ""
+}
+
+// parseDateLocal attempts to parse an ISO or standard datetime string from Strava local dates.
+func parseDateLocal(s string) (time.Time, bool) {
+	if s == "" {
+		return time.Time{}, false
+	}
+	formats := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// parseOffsetFromTimezoneString attempts to extract UTC offset in seconds from strings like
+// "(GMT-07:00) America/Los_Angeles" or "(GMT+05:30) Asia/Kolkata".
+func parseOffsetFromTimezoneString(tz string) (int, bool) {
+	if !strings.HasPrefix(tz, "(GMT") {
+		return 0, false
+	}
+	endIdx := strings.Index(tz, ")")
+	if endIdx < 5 {
+		return 0, false
+	}
+	offsetStr := tz[4:endIdx] // e.g. "-07:00" or "+05:30"
+	if len(offsetStr) != 6 {
+		return 0, false
+	}
+	sign := 1
+	if offsetStr[0] == '-' {
+		sign = -1
+	} else if offsetStr[0] != '+' {
+		return 0, false
+	}
+	var hours, mins int
+	if n, err := fmt.Sscanf(offsetStr[1:], "%d:%d", &hours, &mins); err != nil || n != 2 {
+		return 0, false
+	}
+	return sign * (hours*3600 + mins*60), true
+}
+
+// extractZoneName extracts the location name from Strava timezone string, e.g.
+// "(GMT-07:00) America/Los_Angeles" -> "America/Los_Angeles".
+func extractZoneName(tz string) string {
+	if idx := strings.Index(tz, ") "); idx != -1 && idx+2 < len(tz) {
+		return strings.TrimSpace(tz[idx+2:])
+	}
+	return tz
+}
+
+// LocalStartTime returns the activity's start time in the local timezone where the activity took place.
+// It prioritizes UtcOffset and StartDateLocal, falling back to StartDate.
+func (act *ActivityDetail) LocalStartTime() time.Time {
+	if act == nil {
+		return time.Time{}
+	}
+
+	tzName := extractZoneName(act.Timezone)
+
+	// 1. If UtcOffset is non-zero and StartDate is valid
+	if act.UtcOffset != 0 && !act.StartDate.IsZero() {
+		loc := time.FixedZone(tzName, int(act.UtcOffset))
+		return act.StartDate.In(loc)
+	}
+
+	// 2. If StartDateLocal is provided
+	if act.StartDateLocal != "" {
+		if t, ok := parseDateLocal(act.StartDateLocal); ok {
+			var offset int
+			if act.UtcOffset != 0 {
+				offset = int(act.UtcOffset)
+			} else if off, hasOff := parseOffsetFromTimezoneString(act.Timezone); hasOff {
+				offset = off
+			} else if !act.StartDate.IsZero() {
+				diffSec := int(math.Round(t.Sub(act.StartDate).Seconds()))
+				rem := diffSec % 900
+				if rem > 450 {
+					diffSec += 900 - rem
+				} else if rem < -450 {
+					diffSec -= 900 + rem
+				} else {
+					diffSec -= rem
+				}
+				offset = diffSec
+			}
+			loc := time.FixedZone(tzName, offset)
+			return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), loc)
+		}
+	}
+
+	// 3. If Timezone specifies an offset like "(GMT-07:00) America/Los_Angeles"
+	if off, ok := parseOffsetFromTimezoneString(act.Timezone); ok && !act.StartDate.IsZero() {
+		loc := time.FixedZone(tzName, off)
+		return act.StartDate.In(loc)
+	}
+
+	return act.StartDate
+}
+
+// LocalStartTime returns the segment effort's start time in local time.
+func (eff *SegmentEffortStats) LocalStartTime() time.Time {
+	if eff == nil {
+		return time.Time{}
+	}
+	tzName := extractZoneName(eff.Timezone)
+	if eff.UtcOffset != 0 && !eff.StartDate.IsZero() {
+		return eff.StartDate.In(time.FixedZone(tzName, int(eff.UtcOffset)))
+	}
+	if eff.StartDateLocal != "" {
+		if t, ok := parseDateLocal(eff.StartDateLocal); ok {
+			var offset int
+			if off, hasOff := parseOffsetFromTimezoneString(eff.Timezone); hasOff {
+				offset = off
+			}
+			return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.FixedZone(tzName, offset))
+		}
+	}
+	if off, ok := parseOffsetFromTimezoneString(eff.Timezone); ok && !eff.StartDate.IsZero() {
+		return eff.StartDate.In(time.FixedZone(tzName, off))
+	}
+	return eff.StartDate
 }
 
 // IsRunActivity returns true if the activity is a Run or TrailRun.
@@ -239,6 +369,9 @@ type SegmentEffortStats struct {
 	SegmentID           int64     `json:"segment_id"`
 	SegmentName         string    `json:"segment_name"`
 	StartDate           time.Time `json:"start_date"`
+	StartDateLocal      string    `json:"start_date_local,omitempty"`
+	Timezone            string    `json:"timezone,omitempty"`
+	UtcOffset           float64   `json:"utc_offset,omitempty"`
 	Distance            float64   `json:"distance"`     // meters
 	MovingTime          int       `json:"moving_time"`  // seconds
 	ElapsedTime         int       `json:"elapsed_time"` // seconds
@@ -637,7 +770,7 @@ func printReport(segments []*SegmentSummaryStats, clusters []*RouteCluster) {
 				"Date", "Time", "Raw Pace", "Adj Pace", "Avg HR", "Raw EF", "Adj EF", "Fatigue Load")
 
 			for _, effort := range seg.Efforts {
-				dateStr := effort.StartDate.Format("2006-01-02")
+				dateStr := effort.LocalStartTime().Format("2006-01-02")
 				timeStr := formatDuration(effort.MovingTime)
 				rawPaceStr := formatPace(effort.AvgPaceMinKm)
 				adjPaceStr := formatPace(effort.AdjustedPaceMinKm)
@@ -673,7 +806,7 @@ func printReport(segments []*SegmentSummaryStats, clusters []*RouteCluster) {
 			"Date", "Dist(km)", "Time", "Pace(/km)", "Avg HR(bpm)", "EF(m/beat)", "Decouple")
 
 		for _, run := range cluster.Runs {
-			dateStr := run.Activity.StartDate.Format("2006-01-02")
+			dateStr := run.Activity.LocalStartTime().Format("2006-01-02")
 			distKm := run.Activity.Distance / 1000.0
 			duration := formatDuration(run.Activity.MovingTime)
 			paceStr := formatPace(run.AvgPaceMinKm)

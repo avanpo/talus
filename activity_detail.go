@@ -87,6 +87,7 @@ type ActivityDetailResponseJSON struct {
 	StartDate            string                  `json:"start_date"`
 	StartDateFmt         string                  `json:"start_date_fmt"`
 	StartDateFull        string                  `json:"start_date_full"`
+	Timezone             string                  `json:"timezone,omitempty"`
 	Unit                 string                  `json:"unit"`
 	Distance             float64                 `json:"distance"`
 	DistanceFmt          string                  `json:"distance_fmt"`
@@ -600,15 +601,18 @@ func handleActivityDetailAPI(w http.ResponseWriter, r *http.Request) {
 		gearName = act.Gear.Name
 	}
 
+	locTime := act.LocalStartTime()
+
 	resp := ActivityDetailResponseJSON{
 		ID:                   act.ID,
 		Name:                 act.Name,
 		Description:          act.Description,
 		Type:                 act.Type,
 		SportType:            formatSportType(act.SportType, act.Type),
-		StartDate:            act.StartDate.Format(time.RFC3339),
-		StartDateFmt:         act.StartDate.Format("Jan 02, 2006"),
-		StartDateFull:        act.StartDate.Format("Monday, Jan 02, 2006 at 3:04 PM"),
+		StartDate:            locTime.Format(time.RFC3339),
+		StartDateFmt:         locTime.Format("Jan 02, 2006"),
+		StartDateFull:        locTime.Format("Monday, Jan 02, 2006 at 3:04 PM"),
+		Timezone:             act.Timezone,
 		Unit:                 distUnit,
 		Distance:             math.Round(dist*100) / 100,
 		DistanceFmt:          distFmt,

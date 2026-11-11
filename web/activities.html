@@ -1442,6 +1442,11 @@
                         <div class="meta-item-label">Start Time</div>
                         <div class="meta-item-value">${escapeHtml(act.start_date_full)}</div>
                     </div>
+                    ${act.timezone ? `
+                    <div>
+                        <div class="meta-item-label">Timezone</div>
+                        <div class="meta-item-value">${escapeHtml(act.timezone)}</div>
+                    </div>` : ''}
                     <div>
                         <div class="meta-item-label">Elapsed vs Moving</div>
                         <div class="meta-item-value">${escapeHtml(act.elapsed_time_fmt)} (${escapeHtml(act.moving_time_fmt)} moving)</div>
@@ -1472,7 +1477,7 @@
                 </div>
 
                 <div class="detail-header-card">
-                    <div class="detail-date">${escapeHtml(act.start_date_full)}</div>
+                    <div class="detail-date">${escapeHtml(act.start_date_full)}${act.timezone ? ` <span class="cell-subdued">(${escapeHtml(act.timezone)})</span>` : ''}</div>
                     <h1 class="detail-title">${escapeHtml(act.name || 'Untitled Activity')}</h1>
                     <div class="detail-tags">
                         ${tagsHtml}

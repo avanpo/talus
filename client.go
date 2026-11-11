@@ -32,7 +32,36 @@ type SummaryActivity struct {
 	Type               string    `json:"type"`
 	SportType          string    `json:"sport_type"`
 	StartDate          time.Time `json:"start_date"`
+	StartDateLocal     string    `json:"start_date_local"`
+	Timezone           string    `json:"timezone"`
+	UtcOffset          float64   `json:"utc_offset"`
 	GearID             string    `json:"gear_id"`
+}
+
+// LocalStartTime returns the activity's start time in local time.
+func (sa *SummaryActivity) LocalStartTime() time.Time {
+	if sa == nil {
+		return time.Time{}
+	}
+	tzName := extractZoneName(sa.Timezone)
+	if sa.UtcOffset != 0 && !sa.StartDate.IsZero() {
+		return sa.StartDate.In(time.FixedZone(tzName, int(sa.UtcOffset)))
+	}
+	if sa.StartDateLocal != "" {
+		if t, ok := parseDateLocal(sa.StartDateLocal); ok {
+			var offset int
+			if sa.UtcOffset != 0 {
+				offset = int(sa.UtcOffset)
+			} else if off, hasOff := parseOffsetFromTimezoneString(sa.Timezone); hasOff {
+				offset = off
+			}
+			return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), time.FixedZone(tzName, offset))
+		}
+	}
+	if off, ok := parseOffsetFromTimezoneString(sa.Timezone); ok && !sa.StartDate.IsZero() {
+		return sa.StartDate.In(time.FixedZone(tzName, off))
+	}
+	return sa.StartDate
 }
 
 // StravaClient handles communication with the Strava API.

@@ -667,11 +667,12 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 			preRunFatiguePct = math.Round((r.PreRunFatigueFactor-1.0)*1000.0) / 10.0
 		}
 
+		locTime := r.Activity.LocalStartTime()
 		return ProgressRunJSON{
 			ID:                r.Activity.ID,
 			Name:              r.Activity.Name,
-			Date:              r.Activity.StartDate.Format(time.RFC3339),
-			DateFmt:           r.Activity.StartDate.Format("Jan 02, 2006"),
+			Date:              locTime.Format(time.RFC3339),
+			DateFmt:           locTime.Format("Jan 02, 2006"),
 			Sport:             r.Sport,
 			SportType:         r.Activity.SportType,
 			Distance:          math.Round(dist*10) / 10,
@@ -699,7 +700,7 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 		if sport != "all" && run.Sport != sport {
 			continue
 		}
-		if year > 0 && run.Activity.StartDate.Year() != year {
+		if year > 0 && run.Activity.LocalStartTime().Year() != year {
 			continue
 		}
 		runsJSON = append(runsJSON, formatRun(run))
@@ -712,7 +713,8 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		var effortsJSON []ProgressSegmentEffortJSON
 		for _, eff := range seg.Efforts {
-			if year > 0 && eff.StartDate.Year() != year {
+			locEffTime := eff.LocalStartTime()
+			if year > 0 && locEffTime.Year() != year {
 				continue
 			}
 			effDist := eff.Distance * distMult
@@ -741,8 +743,8 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 				ActivityID:        eff.ActivityID,
 				ActivityName:      eff.ActivityName,
 				Sport:             eff.Sport,
-				Date:              eff.StartDate.Format(time.RFC3339),
-				DateFmt:           eff.StartDate.Format("Jan 02, 2006"),
+				Date:              locEffTime.Format(time.RFC3339),
+				DateFmt:           locEffTime.Format("Jan 02, 2006"),
 				Distance:          math.Round(effDist*100) / 100,
 				MovingTimeFmt:     formatDurationShort(eff.MovingTime),
 				MovingTimeS:       eff.MovingTime,
@@ -830,7 +832,7 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 		}
 		var clusterRunsJSON []ProgressRunJSON
 		for _, cr := range cluster.Runs {
-			if year > 0 && cr.Activity.StartDate.Year() != year {
+			if year > 0 && cr.Activity.LocalStartTime().Year() != year {
 				continue
 			}
 			clusterRunsJSON = append(clusterRunsJSON, formatRun(cr))
@@ -1094,6 +1096,7 @@ type ActivityItemJSON struct {
 	MovingTimeFmt  string  `json:"moving_time_fmt"`
 	Shoe           string  `json:"shoe"`
 	ShoeRelevant   bool    `json:"shoe_relevant"`
+	Timezone       string  `json:"timezone,omitempty"`
 }
 
 type ActivitiesResponseJSON struct {
@@ -1223,14 +1226,15 @@ func handleActivitiesAPI(w http.ResponseWriter, r *http.Request) {
 		sportName := formatSportType(act.SportType, act.Type)
 		shoeRel := IsShoeRelevant(act)
 		shoeName := act.ShoeName()
+		locTime := act.LocalStartTime()
 
 		items = append(items, ActivityItemJSON{
 			ID:             act.ID,
 			Name:           act.Name,
 			Type:           act.Type,
 			SportType:      sportName,
-			StartDate:      act.StartDate.Format(time.RFC3339),
-			StartDateFmt:   act.StartDate.Format("Jan 02, 2006"),
+			StartDate:      locTime.Format(time.RFC3339),
+			StartDateFmt:   locTime.Format("Jan 02, 2006"),
 			Distance:       math.Round(dist*100) / 100,
 			DistanceFmt:    distFmt,
 			Elevation:      math.Round(elev),
@@ -1241,6 +1245,7 @@ func handleActivitiesAPI(w http.ResponseWriter, r *http.Request) {
 			MovingTimeFmt:  formatDurationShort(act.MovingTime),
 			Shoe:           shoeName,
 			ShoeRelevant:   shoeRel,
+			Timezone:       act.Timezone,
 		})
 	}
 

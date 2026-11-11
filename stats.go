@@ -233,8 +233,10 @@ func CalculatePeriodicStatsFromActivities(activities []*ActivityDetail, opts Sta
 			continue
 		}
 
+		actLocalTime := act.LocalStartTime()
+
 		// Filter by Year
-		if opts.Year > 0 && act.StartDate.Year() != opts.Year {
+		if opts.Year > 0 && actLocalTime.Year() != opts.Year {
 			continue
 		}
 
@@ -391,25 +393,25 @@ func CalculatePeriodicStatsFromActivities(activities []*ActivityDetail, opts Sta
 
 		switch opts.Period {
 		case "year":
-			key = fmt.Sprintf("%d", act.StartDate.Year())
+			key = fmt.Sprintf("%d", actLocalTime.Year())
 			label = key
-			sortTime = time.Date(act.StartDate.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
+			sortTime = time.Date(actLocalTime.Year(), 1, 1, 0, 0, 0, 0, time.UTC)
 
 		case "week":
-			year, week := act.StartDate.ISOWeek()
+			year, week := actLocalTime.ISOWeek()
 			key = fmt.Sprintf("%04d-W%02d", year, week)
 			// Compute start of week (Monday)
-			startOfWeek := act.StartDate.AddDate(0, 0, -int((act.StartDate.Weekday()+6)%7))
+			startOfWeek := actLocalTime.AddDate(0, 0, -int((actLocalTime.Weekday()+6)%7))
 			endOfWeek := startOfWeek.AddDate(0, 0, 6)
 			label = fmt.Sprintf("%s (%s - %s)", key, startOfWeek.Format("Jan 02"), endOfWeek.Format("Jan 02"))
-			sortTime = startOfWeek
+			sortTime = time.Date(startOfWeek.Year(), startOfWeek.Month(), startOfWeek.Day(), 0, 0, 0, 0, time.UTC)
 
 		case "month":
 			fallthrough
 		default:
-			key = act.StartDate.Format("2006-01")
+			key = actLocalTime.Format("2006-01")
 			label = key
-			sortTime = time.Date(act.StartDate.Year(), act.StartDate.Month(), 1, 0, 0, 0, 0, time.UTC)
+			sortTime = time.Date(actLocalTime.Year(), actLocalTime.Month(), 1, 0, 0, 0, 0, time.UTC)
 		}
 
 		p, exists := periodsMap[key]
