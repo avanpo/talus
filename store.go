@@ -38,6 +38,7 @@ type cachedFileItem struct {
 	runStats        *RunStats
 	segmentEfforts  []SegmentEffort
 	preSegmentDists map[int64]float64
+	hrSummary       *ActivityHRSummary
 }
 
 var (
@@ -199,6 +200,7 @@ func (s *ActivityStore) ReloadIfNeeded() error {
 						}
 					}
 
+					hrSummary := computeActivityHRSummary(&act)
 					efforts := act.SegmentEfforts
 					// Nil out heavy arrays to free memory (streams already processed)
 					act.Streams = nil
@@ -211,6 +213,7 @@ func (s *ActivityStore) ReloadIfNeeded() error {
 						runStats:        rStats,
 						segmentEfforts:  efforts,
 						preSegmentDists: preDists,
+						hrSummary:       hrSummary,
 					}
 				}
 			}()
@@ -685,4 +688,36 @@ func (s *ActivityStore) GetActivityDetailByID(id int64) (*ActivityDetail, error)
 	}
 
 	return nil, fmt.Errorf("activity %d not found", id)
+}
+
+// GetHRZoneData returns available years, activity HR summaries, and the aggregated BPM histogram
+// filtered by sport ("all", "running", "cycling") and year (0 for all years).
+func (s *ActivityStore) GetHRZoneData(sport string, year int) ([]int, []*ActivityHRSummary, map[int]int) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	yearsCopy := make([]int, len(s.years))
+	copy(yearsCopy, s.years)
+
+	var summaries []*ActivityHRSummary
+	histogram := make(map[int]int)
+
+	for _, item := range s.cacheMap {
+		if item.activity == nil || item.hrSummary == nil {
+			continue
+		}
+		if year > 0 && item.activity.LocalStartTime().Year() != year {
+			continue
+		}
+		if sport != "all" && GetSportCategory(item.activity) != sport {
+			continue
+		}
+
+		summaries = append(summaries, item.hrSummary)
+		for bpm, secs := range item.hrSummary.BPMSeconds {
+			histogram[bpm] += secs
+		}
+	}
+
+	return yearsCopy, summaries, histogram
 }

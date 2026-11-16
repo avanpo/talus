@@ -1,0 +1,971 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HR Zones - talus</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛰️</text></svg>">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-body: #f8fafc;
+            --bg-card: #ffffff;
+            --bg-card-hover: #f1f5f9;
+            --bg-subtle: #f1f5f9;
+            --border: #e2e8f0;
+            --border-light: #cbd5e1;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --text-dim: #94a3b8;
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --emerald: #16a34a;
+            --amber: #d97706;
+            --rose: #e11d48;
+            --indigo: #6366f1;
+            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-body);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background-color: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            padding: 0.85rem 1.5rem;
+            position: sticky;
+            top: 0;
+            z-index: 50;
+        }
+
+        .header-inner {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            font-size: 1.35rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            text-decoration: none;
+            color: var(--text-main);
+        }
+
+        .brand-icon { font-size: 1.5rem; }
+        .brand-badge {
+            font-size: 0.7rem;
+            background-color: #eff6ff;
+            color: var(--primary);
+            border: 1px solid #bfdbfe;
+            padding: 0.2rem 0.5rem;
+            border-radius: 9999px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        nav {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .nav-link {
+            padding: 0.5rem 0.9rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            text-decoration: none;
+            color: var(--text-muted);
+            transition: all 0.15s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .nav-link:hover {
+            color: var(--text-main);
+            background-color: var(--bg-subtle);
+        }
+
+        .nav-link.active {
+            color: #fff;
+            background-color: var(--primary);
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            padding: 0.35rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--emerald);
+        }
+        .status-dot.syncing {
+            background-color: var(--amber);
+            animation: pulse 1.2s infinite;
+        }
+        .status-dot.error {
+            background-color: #f43f5e;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.9); opacity: 0.6; }
+            50% { transform: scale(1.3); opacity: 1; }
+            100% { transform: scale(0.9); opacity: 0.6; }
+        }
+
+        .btn-sync {
+            background-color: var(--bg-card);
+            color: var(--text-main);
+            border: 1px solid var(--border);
+            padding: 0.4rem 0.85rem;
+            border-radius: 6px;
+            font-size: 0.82rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .btn-sync:hover {
+            background-color: var(--bg-subtle);
+            border-color: var(--border-light);
+        }
+
+        main {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 1.5rem;
+            width: 100%;
+            flex: 1;
+        }
+
+        .controls-card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: var(--shadow);
+            padding: 1rem 1.25rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1.25rem;
+            flex-wrap: wrap;
+        }
+
+        .controls-group {
+            display: flex;
+            align-items: center;
+            gap: 0.85rem;
+            flex-wrap: wrap;
+        }
+
+        .controls-label {
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-size: 0.8rem;
+            color: var(--text-main);
+        }
+
+        .select-input {
+            background-color: var(--bg-body);
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 0.5rem 0.9rem;
+            border-radius: 6px;
+            font-size: 0.92rem;
+            font-weight: 600;
+            outline: none;
+            cursor: pointer;
+        }
+        .select-input:focus {
+            border-color: var(--primary);
+        }
+
+        .segmented-toggle {
+            display: inline-flex;
+            background-color: var(--bg-subtle);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.2rem;
+            gap: 0.2rem;
+        }
+
+        .segmented-btn {
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            font-weight: 600;
+            padding: 0.4rem 0.85rem;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+
+        .segmented-btn.active {
+            background-color: var(--bg-card);
+            color: var(--primary);
+            box-shadow: var(--shadow);
+        }
+
+        .meta-summary {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: var(--shadow);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+
+        .card-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-bottom: 1.25rem;
+        }
+
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+        }
+
+        .card-desc {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            margin-top: 0.3rem;
+            line-height: 1.45;
+        }
+
+        .source-badge {
+            font-size: 0.72rem;
+            font-weight: 600;
+            padding: 0.22rem 0.6rem;
+            border-radius: 9999px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+        .source-badge.estimated {
+            background-color: #eff6ff;
+            color: var(--primary);
+            border: 1px solid #bfdbfe;
+        }
+        .source-badge.saved {
+            background-color: #f0fdf4;
+            color: var(--emerald);
+            border: 1px solid #bbf7d0;
+        }
+
+        .zones-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .zones-table th {
+            text-align: left;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            padding: 0.6rem 0.75rem;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .zones-table td {
+            padding: 0.75rem;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
+        }
+
+        .zones-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .zone-label-cell {
+            display: flex;
+            align-items: center;
+            gap: 0.65rem;
+            font-weight: 600;
+            font-size: 0.92rem;
+        }
+
+        .zone-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+            flex-shrink: 0;
+        }
+
+        .zone-input {
+            width: 88px;
+            padding: 0.45rem 0.65rem;
+            border: 1px solid var(--border-light);
+            border-radius: 6px;
+            font-size: 0.92rem;
+            font-weight: 600;
+            color: var(--text-main);
+            background-color: var(--bg-body);
+            outline: none;
+            text-align: center;
+        }
+        .zone-input:focus {
+            border-color: var(--primary);
+            background-color: #fff;
+        }
+
+        .zone-range-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .zone-sep {
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+
+        .zone-unit {
+            font-size: 0.8rem;
+            color: var(--text-muted);
+        }
+
+        .actions-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+            margin-top: 1.25rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+        }
+
+        .btn-group {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+
+        .btn-primary {
+            background-color: var(--primary);
+            color: #fff;
+            border: none;
+            padding: 0.55rem 1.15rem;
+            border-radius: 6px;
+            font-size: 0.88rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.15s;
+        }
+        .btn-primary:hover {
+            background-color: var(--primary-hover);
+        }
+
+        .btn-secondary {
+            background-color: var(--bg-card);
+            color: var(--text-main);
+            border: 1px solid var(--border-light);
+            padding: 0.55rem 1rem;
+            border-radius: 6px;
+            font-size: 0.88rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .btn-secondary:hover {
+            background-color: var(--bg-subtle);
+        }
+
+        .save-feedback {
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--emerald);
+        }
+        .save-feedback.error {
+            color: var(--rose);
+        }
+
+        .chart-container {
+            position: relative;
+            height: 360px;
+            width: 100%;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--text-muted);
+            font-size: 0.92rem;
+        }
+
+        footer {
+            text-align: center;
+            padding: 1.5rem;
+            font-size: 0.8rem;
+            color: var(--text-dim);
+            border-top: 1px solid var(--border);
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-inner">
+            <a href="/" class="brand">
+                <span class="brand-icon">⛰️</span>
+                <span>talus</span>
+                <span class="brand-badge">Telemetry</span>
+            </a>
+            <nav>
+                <a href="/" class="nav-link">Volume</a>
+                <a href="/activities" class="nav-link">Activities</a>
+                <a href="/progress" class="nav-link">Fitness & Progress</a>
+                <a href="/hr-zones" class="nav-link active">HR Zones</a>
+            </nav>
+            <div class="header-actions">
+                <div class="status-pill" id="statusPill">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="statusText">Checking...</span>
+                </div>
+                <button class="btn-sync" id="btnSync" onclick="triggerSync()">Sync Now</button>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <div class="controls-card">
+            <div class="controls-group">
+                <div class="controls-group">
+                    <span class="controls-label">Activity Type:</span>
+                    <select id="sportSelect" class="select-input" onchange="loadHRZones()" style="min-width: 230px;">
+                        <option value="all">All Activities</option>
+                        <option value="running" selected>All Running Activities</option>
+                        <option value="cycling">All Cycling Activities</option>
+                    </select>
+                </div>
+
+                <div class="controls-group">
+                    <span class="controls-label">Years:</span>
+                    <div class="segmented-toggle" role="group" aria-label="Year filter mode">
+                        <button type="button" id="btnAllYears" class="segmented-btn active" onclick="setYearMode('all')">All Years</button>
+                        <button type="button" id="btnSpecificYear" class="segmented-btn" onclick="setYearMode('specific')">Specific Year</button>
+                    </div>
+                    <select id="yearSelect" class="select-input" onchange="onYearSelectChange()" style="min-width: 120px; display: none;">
+                    </select>
+                </div>
+            </div>
+
+            <div class="meta-summary" id="metaSummary">Loading heart rate telemetry...</div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <div class="card-title">
+                        <span>5-Zone Heart Rate Model</span>
+                        <span id="zoneSourceBadge" class="source-badge estimated">Estimated from Data</span>
+                    </div>
+                    <div class="card-desc" id="estimationDesc">
+                        Talus estimates your 5-zone running model from sustained peak heart rate in your recorded telemetry. You can adjust any boundary below and save your actual zones.
+                    </div>
+                </div>
+            </div>
+
+            <table class="zones-table">
+                <thead>
+                    <tr>
+                        <th>Zone</th>
+                        <th>BPM Range (Editable)</th>
+                        <th>Time in Zone</th>
+                        <th>% of Training Time</th>
+                    </tr>
+                </thead>
+                <tbody id="zonesTableBody"></tbody>
+            </table>
+
+            <div class="actions-bar">
+                <div class="btn-group">
+                    <button type="button" class="btn-primary" onclick="saveZones()">Save My Zones</button>
+                    <button type="button" class="btn-secondary" onclick="resetToEstimated()">Reset to Estimated</button>
+                    <span id="saveFeedback" class="save-feedback"></span>
+                </div>
+                <div style="font-size: 0.8rem; color: var(--text-muted);">
+                    Editing any value immediately updates the training time graph below.
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h3 class="card-title">Time in Heart Rate Zones (% of Training Time)</h3>
+                    <div class="card-desc" id="chartDesc">Distribution of recorded heart rate time across your 5 training zones.</div>
+                </div>
+            </div>
+            <div id="chartWrapper" class="chart-container">
+                <canvas id="hrZonesChart"></canvas>
+            </div>
+            <div id="emptyState" class="empty-state" style="display: none;">
+                No heart rate data found for the selected activity type and year.
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        talus &mdash; Local Strava Telemetry &amp; Backup
+    </footer>
+
+    <script>
+        const ZONE_COLORS = [
+            '#64748b', // Z1 Recovery - Slate
+            '#2563eb', // Z2 Aerobic - Blue
+            '#16a34a', // Z3 Tempo - Emerald
+            '#d97706', // Z4 Threshold - Amber
+            '#e11d48'  // Z5 VO2 Max - Rose
+        ];
+
+        let yearMode = 'all';
+        let availableYears = [];
+        let estimatedZones = [];
+        let activeZones = [];
+        let bpmHistogram = {};
+        let chartInstance = null;
+
+        function setYearMode(mode) {
+            yearMode = mode;
+            const btnAll = document.getElementById('btnAllYears');
+            const btnSpec = document.getElementById('btnSpecificYear');
+            const yearSel = document.getElementById('yearSelect');
+
+            if (mode === 'all') {
+                btnAll.classList.add('active');
+                btnSpec.classList.remove('active');
+                yearSel.style.display = 'none';
+            } else {
+                btnAll.classList.remove('active');
+                btnSpec.classList.add('active');
+                yearSel.style.display = 'inline-block';
+            }
+            loadHRZones();
+        }
+
+        function onYearSelectChange() {
+            if (yearMode !== 'specific') {
+                yearMode = 'specific';
+                document.getElementById('btnAllYears').classList.remove('active');
+                document.getElementById('btnSpecificYear').classList.add('active');
+                document.getElementById('yearSelect').style.display = 'inline-block';
+            }
+            loadHRZones();
+        }
+
+        function getSelectedYear() {
+            if (yearMode === 'all') return 0;
+            const val = parseInt(document.getElementById('yearSelect').value, 10);
+            return isNaN(val) ? 0 : val;
+        }
+
+        function formatDuration(seconds) {
+            if (!seconds || seconds <= 0) return '0m';
+            const hrs = Math.floor(seconds / 3600);
+            const mins = Math.floor((seconds % 3600) / 60);
+            if (hrs > 0) return `${hrs}h ${mins}m`;
+            if (mins > 0) return `${mins}m`;
+            return `${seconds}s`;
+        }
+
+        async function loadHRZones() {
+            const sport = document.getElementById('sportSelect').value;
+            const year = getSelectedYear();
+            setFeedback('', false);
+
+            try {
+                const res = await fetch(`/api/hr-zones?sport=${encodeURIComponent(sport)}&year=${year}`);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const data = await res.json();
+
+                availableYears = data.years || [];
+                populateYearSelect(availableYears, year);
+
+                estimatedZones = data.estimated_zones || [];
+                bpmHistogram = data.bpm_histogram || {};
+
+                if (data.has_saved_zones && data.saved_zones && data.saved_zones.length === 5) {
+                    activeZones = data.saved_zones.map(z => ({ ...z }));
+                    setSourceBadge(true);
+                } else {
+                    activeZones = estimatedZones.map(z => ({ ...z }));
+                    setSourceBadge(false);
+                }
+
+                updateMetaDisplay(data.estimation_meta || {});
+                renderZonesTable();
+                recomputeAndRenderChart();
+            } catch (err) {
+                console.error('Failed to load HR zones:', err);
+                setFeedback('Failed to load HR zone data.', true);
+            }
+        }
+
+        function populateYearSelect(years, currentYear) {
+            const sel = document.getElementById('yearSelect');
+            const prevVal = currentYear || parseInt(sel.value, 10);
+            sel.innerHTML = '';
+            if (years.length === 0) {
+                const opt = document.createElement('option');
+                opt.value = '0';
+                opt.textContent = 'No years';
+                sel.appendChild(opt);
+                return;
+            }
+            years.forEach((y, idx) => {
+                const opt = document.createElement('option');
+                opt.value = String(y);
+                opt.textContent = String(y);
+                if (prevVal === y || (!prevVal && idx === 0)) {
+                    opt.selected = true;
+                }
+                sel.appendChild(opt);
+            });
+        }
+
+        function setSourceBadge(isSaved) {
+            const badge = document.getElementById('zoneSourceBadge');
+            if (isSaved) {
+                badge.textContent = 'Saved Custom Zones';
+                badge.className = 'source-badge saved';
+            } else {
+                badge.textContent = 'Estimated from Data';
+                badge.className = 'source-badge estimated';
+            }
+        }
+
+        function updateMetaDisplay(meta) {
+            const summaryEl = document.getElementById('metaSummary');
+            const descEl = document.getElementById('estimationDesc');
+
+            const hrsText = formatDuration(meta.total_hr_seconds || 0);
+            const actsCount = meta.activities_analyzed || 0;
+            const hrMaxText = meta.estimated_hr_max ? `${meta.estimated_hr_max} bpm` : '—';
+            summaryEl.textContent = `${actsCount} activities analyzed • ${hrsText} of HR data • Est. HRmax: ${hrMaxText}`;
+
+            let parts = [];
+            if (meta.used_default_hr_max) {
+                parts.push('Not enough HR telemetry found for this filter, so a default HRmax of 190 bpm was used.');
+            } else {
+                parts.push(`Estimated HRmax: <strong>${meta.estimated_hr_max} bpm</strong> (from sustained peak HR across ${meta.activities_with_streams || 0} stream-backed activities).`);
+            }
+            if (meta.model === 'lthr' && meta.estimated_lthr) {
+                parts.push(`Estimated LTHR: <strong>${meta.estimated_lthr} bpm</strong> (95% of peak 20-min effort).`);
+                parts.push('Zones are prepopulated using the LTHR-anchored 5-zone running model (&lt;85% / 85–89% / 90–94% / 95–99% / &ge;100% LTHR). Edit any input below to customize.');
+            } else {
+                parts.push('No &ge;20-min stream effort found, so zones are prepopulated using the 50–60–70–80–90–100% HRmax model. Edit any input below to customize.');
+            }
+            descEl.innerHTML = parts.join(' ');
+        }
+
+        function renderZonesTable() {
+            const tbody = document.getElementById('zonesTableBody');
+            tbody.innerHTML = '';
+
+            activeZones.forEach((z, idx) => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td>
+                        <div class="zone-label-cell">
+                            <span class="zone-dot" style="background-color: ${ZONE_COLORS[idx]};"></span>
+                            <span>${escapeHtml(z.name)}</span>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="zone-range-group">
+                            <input type="text" inputmode="numeric" class="zone-input" id="zMin_${idx}" value="${z.min}" oninput="onZoneInput(${idx}, 'min', this.value)" aria-label="Zone ${z.zone} min BPM">
+                            <span class="zone-sep">&ndash;</span>
+                            <input type="text" inputmode="numeric" class="zone-input" id="zMax_${idx}" value="${z.max}" oninput="onZoneInput(${idx}, 'max', this.value)" aria-label="Zone ${z.zone} max BPM">
+                            <span class="zone-unit">bpm</span>
+                        </div>
+                    </td>
+                    <td id="zTime_${idx}" style="font-weight: 600;">0m</td>
+                    <td id="zPct_${idx}" style="font-weight: 700; color: ${ZONE_COLORS[idx]};">0.0%</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function onZoneInput(idx, field, rawVal) {
+            const parsed = parseInt(rawVal.trim(), 10);
+            if (!isNaN(parsed)) {
+                activeZones[idx][field] = parsed;
+                recomputeAndRenderChart();
+            }
+        }
+
+        function computeClientDistribution() {
+            const dist = activeZones.map(z => ({
+                zone: z.zone,
+                name: z.name,
+                min: z.min,
+                max: z.max,
+                seconds: 0,
+                percent: 0
+            }));
+
+            if (dist.length !== 5) return { dist, totalSeconds: 0 };
+
+            let totalSeconds = 0;
+            for (const [bpmStr, secs] of Object.entries(bpmHistogram)) {
+                const bpm = parseInt(bpmStr, 10);
+                if (isNaN(bpm) || secs <= 0 || bpm < 30 || bpm > 250) continue;
+                totalSeconds += secs;
+
+                if (bpm <= dist[0].max) {
+                    dist[0].seconds += secs;
+                } else if (bpm <= dist[1].max) {
+                    dist[1].seconds += secs;
+                } else if (bpm <= dist[2].max) {
+                    dist[2].seconds += secs;
+                } else if (bpm <= dist[3].max) {
+                    dist[3].seconds += secs;
+                } else {
+                    dist[4].seconds += secs;
+                }
+            }
+
+            if (totalSeconds > 0) {
+                dist.forEach(item => {
+                    item.percent = Math.round((item.seconds / totalSeconds) * 1000) / 10;
+                });
+            }
+
+            return { dist, totalSeconds };
+        }
+
+        function recomputeAndRenderChart() {
+            const { dist, totalSeconds } = computeClientDistribution();
+
+            dist.forEach((item, idx) => {
+                const timeEl = document.getElementById(`zTime_${idx}`);
+                const pctEl = document.getElementById(`zPct_${idx}`);
+                if (timeEl) timeEl.textContent = formatDuration(item.seconds);
+                if (pctEl) pctEl.textContent = `${item.percent.toFixed(1)}%`;
+            });
+
+            const wrapper = document.getElementById('chartWrapper');
+            const emptyState = document.getElementById('emptyState');
+
+            if (totalSeconds === 0) {
+                wrapper.style.display = 'none';
+                emptyState.style.display = 'block';
+                if (chartInstance) {
+                    chartInstance.destroy();
+                    chartInstance = null;
+                }
+                return;
+            }
+
+            wrapper.style.display = 'block';
+            emptyState.style.display = 'none';
+
+            const labels = dist.map(d => `${d.name} (${d.min}-${d.max} bpm)`);
+            const values = dist.map(d => d.percent);
+
+            const ctx = document.getElementById('hrZonesChart').getContext('2d');
+            if (chartInstance) {
+                chartInstance.data.labels = labels;
+                chartInstance.data.datasets[0].data = values;
+                chartInstance.update();
+                return;
+            }
+
+            chartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: '% of Training Time',
+                        data: values,
+                        backgroundColor: ZONE_COLORS,
+                        borderRadius: 6,
+                        maxBarThickness: 72
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    const idx = context.dataIndex;
+                                    const current = computeClientDistribution().dist[idx];
+                                    return ` ${current.percent.toFixed(1)}% (${formatDuration(current.seconds)})`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            max: 100,
+                            ticks: {
+                                callback: v => v + '%'
+                            },
+                            title: {
+                                display: true,
+                                text: 'Percentage of Training Time (%)'
+                            }
+                        },
+                        x: {
+                            grid: { display: false }
+                        }
+                    }
+                }
+            });
+        }
+
+        async function saveZones() {
+            const sport = document.getElementById('sportSelect').value;
+            // Read latest values from inputs to ensure accuracy
+            const zonesToSave = activeZones.map((z, idx) => ({
+                zone: idx + 1,
+                name: z.name,
+                min: parseInt(document.getElementById(`zMin_${idx}`).value, 10),
+                max: parseInt(document.getElementById(`zMax_${idx}`).value, 10)
+            }));
+
+            try {
+                const res = await fetch('/api/hr-zones', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sport, zones: zonesToSave })
+                });
+                if (!res.ok) {
+                    const msg = await res.text();
+                    setFeedback(msg || 'Invalid zones.', true);
+                    return;
+                }
+                activeZones = zonesToSave;
+                setSourceBadge(true);
+                setFeedback('Zones saved!', false);
+                recomputeAndRenderChart();
+            } catch (err) {
+                setFeedback('Failed to save zones.', true);
+            }
+        }
+
+        async function resetToEstimated() {
+            const sport = document.getElementById('sportSelect').value;
+            try {
+                const res = await fetch('/api/hr-zones', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ sport, reset: true })
+                });
+                if (!res.ok) throw new Error('Reset failed');
+                activeZones = estimatedZones.map(z => ({ ...z }));
+                setSourceBadge(false);
+                renderZonesTable();
+                recomputeAndRenderChart();
+                setFeedback('Reset to data-estimated zones.', false);
+            } catch (err) {
+                setFeedback('Failed to reset zones.', true);
+            }
+        }
+
+        function setFeedback(msg, isError) {
+            const el = document.getElementById('saveFeedback');
+            el.textContent = msg;
+            el.className = isError ? 'save-feedback error' : 'save-feedback';
+        }
+
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+
+        async function refreshStatus() {
+            try {
+                const res = await fetch('/api/status');
+                if (!res.ok) return;
+                const data = await res.json();
+                const dot = document.getElementById('statusDot');
+                const text = document.getElementById('statusText');
+                if (data.is_syncing) {
+                    dot.className = 'status-dot syncing';
+                    text.textContent = 'Syncing...';
+                } else if (data.last_sync_error) {
+                    dot.className = 'status-dot error';
+                    text.textContent = 'Sync Error';
+                } else {
+                    dot.className = 'status-dot';
+                    text.textContent = `${data.total_activities || 0} activities`;
+                }
+            } catch (e) {}
+        }
+
+        async function triggerSync() {
+            try {
+                await fetch('/api/sync', { method: 'POST' });
+                refreshStatus();
+            } catch (e) {}
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            refreshStatus();
+            setInterval(refreshStatus, 10000);
+            loadHRZones();
+        });
+    </script>
+</body>
+</html>

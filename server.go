@@ -1079,6 +1079,133 @@ func handleProgressPage(w http.ResponseWriter, r *http.Request) {
 	serveHTMLFile(w, "web/progress.html")
 }
 
+func handleHRZonesPage(w http.ResponseWriter, r *http.Request) {
+	if !isDaemonConfigured(daemon) {
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
+
+	serveHTMLFile(w, "web/hr-zones.html")
+}
+
+type HRZonesResponseJSON struct {
+	Sport          string                 `json:"sport"`
+	Year           int                    `json:"year"`
+	Years          []int                  `json:"years"`
+	EstimatedZones []HRZone               `json:"estimated_zones"`
+	SavedZones     []HRZone               `json:"saved_zones,omitempty"`
+	HasSavedZones  bool                   `json:"has_saved_zones"`
+	EstimationMeta HRZoneEstimationMeta   `json:"estimation_meta"`
+	BPMHistogram   map[int]int            `json:"bpm_histogram"`
+	Distribution   []ZoneDistributionItem `json:"distribution"`
+}
+
+type SaveHRZonesRequestJSON struct {
+	Sport string   `json:"sport"`
+	Zones []HRZone `json:"zones"`
+	Reset bool     `json:"reset,omitempty"`
+}
+
+func handleHRZonesAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		var req SaveHRZonesRequestJSON
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, fmt.Sprintf("Invalid JSON payload: %v", err), http.StatusBadRequest)
+			return
+		}
+		sport := NormalizeHRSport(req.Sport)
+		cfgDir := daemon.configDir
+		if cfgDir == "" {
+			cfgDir = daemon.dir
+		}
+
+		cfg, err := LoadHRZonesWithFallback(cfgDir, daemon.dataDir)
+		if err != nil {
+			cfg = &SavedHRZonesConfig{ZonesBySport: make(map[string][]HRZone)}
+		}
+
+		if req.Reset {
+			delete(cfg.ZonesBySport, sport)
+		} else {
+			validated, err := ValidateHRZones(req.Zones)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			cfg.ZonesBySport[sport] = validated
+		}
+
+		if err := SaveHRZones(cfgDir, cfg); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to save HR zones: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"status": "ok",
+			"sport":  sport,
+			"reset":  req.Reset,
+		})
+		return
+	}
+
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	sport := NormalizeHRSport(r.URL.Query().Get("sport"))
+	year := 0
+	if yStr := r.URL.Query().Get("year"); yStr != "" {
+		if y, err := strconv.Atoi(yStr); err == nil && y > 0 {
+			year = y
+		}
+	}
+
+	store := GetGlobalStore(daemon.dataDir)
+	if err := store.ReloadIfNeeded(); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to load activities: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	years, summaries, histogram := store.GetHRZoneData(sport, year)
+	estimatedZones, meta := EstimateHRZones(summaries)
+
+	cfgDir := daemon.configDir
+	if cfgDir == "" {
+		cfgDir = daemon.dir
+	}
+	var savedZones []HRZone
+	hasSaved := false
+	if cfg, err := LoadHRZonesWithFallback(cfgDir, daemon.dataDir); err == nil && cfg != nil {
+		if z, ok := cfg.ZonesBySport[sport]; ok && len(z) == 5 {
+			savedZones = z
+			hasSaved = true
+		}
+	}
+
+	activeZones := estimatedZones
+	if hasSaved {
+		activeZones = savedZones
+	}
+	distribution := ComputeZoneDistribution(histogram, activeZones)
+
+	resp := HRZonesResponseJSON{
+		Sport:          sport,
+		Year:           year,
+		Years:          years,
+		EstimatedZones: estimatedZones,
+		SavedZones:     savedZones,
+		HasSavedZones:  hasSaved,
+		EstimationMeta: meta,
+		BPMHistogram:   histogram,
+		Distribution:   distribution,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
 type ActivityItemJSON struct {
 	ID             int64   `json:"id"`
 	Name           string  `json:"name"`
@@ -1278,8 +1405,10 @@ func StartWebServerWithDirs(dataDir, configDir, metadataDir string, port int, sy
 	mux.HandleFunc("/activities", handleActivitiesPage)
 	mux.HandleFunc("/activity", handleActivitiesPage)
 	mux.HandleFunc("/progress", handleProgressPage)
+	mux.HandleFunc("/hr-zones", handleHRZonesPage)
 	mux.HandleFunc("/api/stats", handleStatsAPI)
 	mux.HandleFunc("/api/progress", handleProgressAPI)
+	mux.HandleFunc("/api/hr-zones", handleHRZonesAPI)
 	mux.HandleFunc("/api/activities", handleActivitiesAPI)
 	mux.HandleFunc("/api/activity", handleActivityDetailAPI)
 	mux.HandleFunc("/api/status", handleStatusAPI)
