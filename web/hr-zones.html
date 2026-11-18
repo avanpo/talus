@@ -556,6 +556,21 @@
                 No heart rate data found for the selected activity type and year.
             </div>
         </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h3 class="card-title">Heart Rate Distribution by BPM</h3>
+                    <div class="card-desc">Time spent at each individual heart rate (1 bpm buckets), colored by your current 5 zones.</div>
+                </div>
+            </div>
+            <div id="bpmChartWrapper" class="chart-container">
+                <canvas id="bpmDistChart"></canvas>
+            </div>
+            <div id="bpmEmptyState" class="empty-state" style="display: none;">
+                No heart rate data found for the selected activity type and year.
+            </div>
+        </div>
     </main>
 
     <footer>
@@ -577,6 +592,7 @@
         let activeZones = [];
         let bpmHistogram = {};
         let chartInstance = null;
+        let bpmChartInstance = null;
 
         function setYearMode(mode) {
             yearMode = mode;
@@ -807,6 +823,7 @@
                     chartInstance.destroy();
                     chartInstance = null;
                 }
+                renderBPMHistogramChart(0);
                 return;
             }
 
@@ -821,6 +838,7 @@
                 chartInstance.data.labels = labels;
                 chartInstance.data.datasets[0].data = values;
                 chartInstance.update();
+                renderBPMHistogramChart(totalSeconds);
                 return;
             }
 
@@ -865,6 +883,175 @@
                         },
                         x: {
                             grid: { display: false }
+                        }
+                    }
+                }
+            });
+
+            renderBPMHistogramChart(totalSeconds);
+        }
+
+        function getZoneIndexForBPM(bpm) {
+            if (activeZones.length !== 5) return 0;
+            if (bpm <= activeZones[0].max) return 0;
+            if (bpm <= activeZones[1].max) return 1;
+            if (bpm <= activeZones[2].max) return 2;
+            if (bpm <= activeZones[3].max) return 3;
+            return 4;
+        }
+
+        function renderBPMHistogramChart(totalSeconds) {
+            const wrapper = document.getElementById('bpmChartWrapper');
+            const emptyState = document.getElementById('bpmEmptyState');
+
+            if (!totalSeconds || totalSeconds === 0) {
+                wrapper.style.display = 'none';
+                emptyState.style.display = 'block';
+                if (bpmChartInstance) {
+                    bpmChartInstance.destroy();
+                    bpmChartInstance = null;
+                }
+                return;
+            }
+
+            // Collect sorted valid BPM entries
+            const entries = [];
+            for (const [bpmStr, secs] of Object.entries(bpmHistogram)) {
+                const bpm = parseInt(bpmStr, 10);
+                if (!isNaN(bpm) && bpm >= 30 && bpm <= 230 && secs > 0) {
+                    entries.push({ bpm, secs });
+                }
+            }
+            entries.sort((a, b) => a.bpm - b.bpm);
+
+            if (entries.length === 0) {
+                wrapper.style.display = 'none';
+                emptyState.style.display = 'block';
+                return;
+            }
+
+            // Trim extreme <0.05% isolated sensor-noise tails when enough data exists
+            let minBPM = entries[0].bpm;
+            let maxBPM = entries[entries.length - 1].bpm;
+            if (totalSeconds >= 600) {
+                const lowCutoff = totalSeconds * 0.0005;
+                const highCutoff = totalSeconds * 0.9995;
+                let cum = 0;
+                let foundMin = false;
+                for (const e of entries) {
+                    cum += e.secs;
+                    if (!foundMin && cum >= lowCutoff) {
+                        minBPM = e.bpm;
+                        foundMin = true;
+                    }
+                    if (cum <= highCutoff) {
+                        maxBPM = e.bpm;
+                    }
+                }
+                if (maxBPM < minBPM) {
+                    minBPM = entries[0].bpm;
+                    maxBPM = entries[entries.length - 1].bpm;
+                }
+            }
+
+            const secsByBPM = new Map(entries.map(e => [e.bpm, e.secs]));
+            const bpms = [];
+            const rawSecs = [];
+            let maxBucketSecs = 0;
+            for (let b = minBPM; b <= maxBPM; b++) {
+                const s = secsByBPM.get(b) || 0;
+                bpms.push(b);
+                rawSecs.push(s);
+                if (s > maxBucketSecs) maxBucketSecs = s;
+            }
+
+            const useHours = maxBucketSecs >= 7200;
+            const divisor = useHours ? 3600 : 60;
+            const yLabel = useHours ? 'Time (Hours)' : 'Time (Minutes)';
+            const values = rawSecs.map(s => Math.round((s / divisor) * 100) / 100);
+            const bgColors = bpms.map(b => ZONE_COLORS[getZoneIndexForBPM(b)] + 'cc');
+            const borderColors = bpms.map(b => ZONE_COLORS[getZoneIndexForBPM(b)]);
+
+            wrapper.style.display = 'block';
+            emptyState.style.display = 'none';
+
+            const ctx = document.getElementById('bpmDistChart').getContext('2d');
+            if (bpmChartInstance) {
+                bpmChartInstance.data.labels = bpms;
+                bpmChartInstance.data.datasets[0].data = values;
+                bpmChartInstance.data.datasets[0].backgroundColor = bgColors;
+                bpmChartInstance.data.datasets[0].borderColor = borderColors;
+                bpmChartInstance.data.datasets[0]._rawSecs = rawSecs;
+                bpmChartInstance.data.datasets[0]._totalSecs = totalSeconds;
+                bpmChartInstance.options.scales.y.title.text = yLabel;
+                bpmChartInstance.update();
+                return;
+            }
+
+            bpmChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: bpms,
+                    datasets: [{
+                        label: 'Time at HR',
+                        data: values,
+                        backgroundColor: bgColors,
+                        borderColor: borderColors,
+                        borderWidth: 1,
+                        borderRadius: 2,
+                        barPercentage: 1.0,
+                        categoryPercentage: 0.94,
+                        _rawSecs: rawSecs,
+                        _totalSecs: totalSeconds
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            callbacks: {
+                                title: function(items) {
+                                    if (!items.length) return '';
+                                    const bpm = parseInt(items[0].label, 10);
+                                    const zIdx = getZoneIndexForBPM(bpm);
+                                    const zName = activeZones[zIdx] ? activeZones[zIdx].name : `Zone ${zIdx + 1}`;
+                                    return `${bpm} bpm — ${zName}`;
+                                },
+                                label: function(context) {
+                                    const ds = context.dataset;
+                                    const secs = ds._rawSecs[context.dataIndex] || 0;
+                                    const pct = ds._totalSecs > 0 ? ((secs / ds._totalSecs) * 100).toFixed(2) : '0.00';
+                                    return ` Time: ${formatDuration(secs)} (${pct}%)`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: yLabel
+                            }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: {
+                                maxTicksLimit: 16,
+                                callback: function(val) {
+                                    return this.getLabelForValue(val) + ' bpm';
+                                }
+                            },
+                            title: {
+                                display: true,
+                                text: 'Heart Rate (bpm)'
+                            }
                         }
                     }
                 }
