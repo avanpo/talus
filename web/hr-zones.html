@@ -244,6 +244,47 @@
             box-shadow: var(--shadow);
         }
 
+        .segmented-btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        .zone-source-toggle-wrap {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            flex-wrap: wrap;
+        }
+
+        .zone-cmp-cell {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            font-variant-numeric: tabular-nums;
+            white-space: nowrap;
+        }
+
+        .cmp-badge {
+            display: inline-block;
+            font-size: 0.7rem;
+            font-weight: 600;
+            padding: 0.12rem 0.45rem;
+            border-radius: 9999px;
+            margin-left: 0.4rem;
+            vertical-align: middle;
+        }
+
+        .cmp-badge.match {
+            background-color: #f0fdf4;
+            color: var(--emerald);
+            border: 1px solid #bbf7d0;
+        }
+
+        .cmp-badge.diff {
+            background-color: #fffbeb;
+            color: var(--amber);
+            border: 1px solid #fde68a;
+        }
+
         .meta-summary {
             font-size: 0.85rem;
             color: var(--text-muted);
@@ -439,6 +480,35 @@
             width: 100%;
         }
 
+        .bpm-zone-legend {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.75rem 1.25rem;
+            margin-bottom: 1rem;
+            padding: 0.65rem 0.9rem;
+            background-color: var(--bg-subtle);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-size: 0.85rem;
+        }
+
+        .bpm-legend-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+        }
+
+        .bpm-legend-name {
+            color: var(--text-main);
+            font-weight: 600;
+        }
+
+        .bpm-legend-pct {
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+        }
+
         .empty-state {
             text-align: center;
             padding: 3rem 1rem;
@@ -461,7 +531,6 @@
             <a href="/" class="brand">
                 <span class="brand-icon">⛰️</span>
                 <span>talus</span>
-                <span class="brand-badge">Telemetry</span>
             </a>
             <nav>
                 <a href="/" class="nav-link">Volume</a>
@@ -516,6 +585,13 @@
                         Talus estimates your 5-zone running model from sustained peak heart rate in your recorded telemetry. You can adjust any boundary below and save your actual zones.
                     </div>
                 </div>
+                <div class="zone-source-toggle-wrap">
+                    <span class="controls-label">Use Model:</span>
+                    <div class="segmented-toggle" role="group" aria-label="Zone model source">
+                        <button type="button" id="btnUseSavedZones" class="segmented-btn" onclick="setZoneSourceMode('saved')" disabled title="Save custom zones first">Saved</button>
+                        <button type="button" id="btnUseEstimatedZones" class="segmented-btn active" onclick="setZoneSourceMode('estimated')">Estimated</button>
+                    </div>
+                </div>
             </div>
 
             <table class="zones-table">
@@ -523,6 +599,7 @@
                     <tr>
                         <th>Zone</th>
                         <th>BPM Range (Editable)</th>
+                        <th id="comparisonColHeader" style="display: none;">Estimated Range</th>
                         <th>Time in Zone</th>
                         <th>% of Training Time</th>
                     </tr>
@@ -545,25 +622,11 @@
         <div class="card">
             <div class="card-header">
                 <div>
-                    <h3 class="card-title">Time in Heart Rate Zones (% of Training Time)</h3>
-                    <div class="card-desc" id="chartDesc">Distribution of recorded heart rate time across your 5 training zones.</div>
-                </div>
-            </div>
-            <div id="chartWrapper" class="chart-container">
-                <canvas id="hrZonesChart"></canvas>
-            </div>
-            <div id="emptyState" class="empty-state" style="display: none;">
-                No heart rate data found for the selected activity type and year.
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-header">
-                <div>
                     <h3 class="card-title">Heart Rate Distribution by BPM</h3>
                     <div class="card-desc">Time spent at each individual heart rate (1 bpm buckets), colored by your current 5 zones.</div>
                 </div>
             </div>
+            <div id="bpmZoneLegend" class="bpm-zone-legend" style="display: none;"></div>
             <div id="bpmChartWrapper" class="chart-container">
                 <canvas id="bpmDistChart"></canvas>
             </div>
@@ -589,9 +652,11 @@
         let yearMode = 'all';
         let availableYears = [];
         let estimatedZones = [];
+        let savedZones = [];
+        let hasSavedZones = false;
+        let zoneSourceMode = null; // 'saved' | 'estimated'
         let activeZones = [];
         let bpmHistogram = {};
-        let chartInstance = null;
         let bpmChartInstance = null;
 
         function setYearMode(mode) {
@@ -652,14 +717,17 @@
 
                 estimatedZones = data.estimated_zones || [];
                 bpmHistogram = data.bpm_histogram || {};
+                hasSavedZones = Boolean(data.has_saved_zones && data.saved_zones && data.saved_zones.length === 5);
+                savedZones = hasSavedZones ? data.saved_zones.map(z => ({ ...z })) : [];
 
-                if (data.has_saved_zones && data.saved_zones && data.saved_zones.length === 5) {
-                    activeZones = data.saved_zones.map(z => ({ ...z }));
-                    setSourceBadge(true);
-                } else {
-                    activeZones = estimatedZones.map(z => ({ ...z }));
-                    setSourceBadge(false);
+                if (!hasSavedZones) {
+                    zoneSourceMode = 'estimated';
+                } else if (zoneSourceMode !== 'saved' && zoneSourceMode !== 'estimated') {
+                    zoneSourceMode = 'saved';
                 }
+
+                activeZones = (zoneSourceMode === 'saved' ? savedZones : estimatedZones).map(z => ({ ...z }));
+                updateZoneSourceUI();
 
                 updateMetaDisplay(data.estimation_meta || {});
                 renderZonesTable();
@@ -703,6 +771,41 @@
             }
         }
 
+        function setZoneSourceMode(mode) {
+            if (mode === 'saved' && !hasSavedZones) return;
+            zoneSourceMode = mode;
+            activeZones = (mode === 'saved' ? savedZones : estimatedZones).map(z => ({ ...z }));
+            setFeedback('', false);
+            updateZoneSourceUI();
+            renderZonesTable();
+            recomputeAndRenderChart();
+        }
+
+        function updateZoneSourceUI() {
+            const btnSaved = document.getElementById('btnUseSavedZones');
+            const btnEst = document.getElementById('btnUseEstimatedZones');
+            const cmpHeader = document.getElementById('comparisonColHeader');
+
+            if (btnSaved) {
+                btnSaved.disabled = !hasSavedZones;
+                btnSaved.title = hasSavedZones ? 'Use your saved custom zones' : 'Save custom zones first';
+                btnSaved.classList.toggle('active', hasSavedZones && zoneSourceMode === 'saved');
+            }
+            if (btnEst) {
+                btnEst.classList.toggle('active', zoneSourceMode === 'estimated');
+            }
+            if (cmpHeader) {
+                if (hasSavedZones) {
+                    cmpHeader.style.display = '';
+                    cmpHeader.textContent = zoneSourceMode === 'saved' ? 'Estimated Range' : 'Saved Range';
+                } else {
+                    cmpHeader.style.display = 'none';
+                }
+            }
+
+            setSourceBadge(zoneSourceMode === 'saved');
+        }
+
         function updateMetaDisplay(meta) {
             const summaryEl = document.getElementById('metaSummary');
             const descEl = document.getElementById('estimationDesc');
@@ -733,6 +836,7 @@
 
             activeZones.forEach((z, idx) => {
                 const tr = document.createElement('tr');
+                const cmpCell = hasSavedZones ? `<td id="zCmp_${idx}" class="zone-cmp-cell"></td>` : '';
                 tr.innerHTML = `
                     <td>
                         <div class="zone-label-cell">
@@ -742,25 +846,94 @@
                     </td>
                     <td>
                         <div class="zone-range-group">
-                            <input type="text" inputmode="numeric" class="zone-input" id="zMin_${idx}" value="${z.min}" oninput="onZoneInput(${idx}, 'min', this.value)" aria-label="Zone ${z.zone} min BPM">
+                            <input type="text" inputmode="numeric" class="zone-input" id="zMin_${idx}" value="${z.min}" oninput="onZoneInput(${idx}, 'min', this.value)" onchange="onZoneCommit(${idx}, 'min', this.value)" aria-label="Zone ${z.zone} min BPM">
                             <span class="zone-sep">&ndash;</span>
-                            <input type="text" inputmode="numeric" class="zone-input" id="zMax_${idx}" value="${z.max}" oninput="onZoneInput(${idx}, 'max', this.value)" aria-label="Zone ${z.zone} max BPM">
+                            <input type="text" inputmode="numeric" class="zone-input" id="zMax_${idx}" value="${z.max}" oninput="onZoneInput(${idx}, 'max', this.value)" onchange="onZoneCommit(${idx}, 'max', this.value)" aria-label="Zone ${z.zone} max BPM">
                             <span class="zone-unit">bpm</span>
                         </div>
                     </td>
+                    ${cmpCell}
                     <td id="zTime_${idx}" style="font-weight: 600;">0m</td>
                     <td id="zPct_${idx}" style="font-weight: 700; color: ${ZONE_COLORS[idx]};">0.0%</td>
                 `;
                 tbody.appendChild(tr);
             });
+            updateComparisonCells();
+        }
+
+        function updateComparisonCells() {
+            if (!hasSavedZones) return;
+            const otherZones = zoneSourceMode === 'saved' ? estimatedZones : savedZones;
+            activeZones.forEach((z, idx) => {
+                const cell = document.getElementById(`zCmp_${idx}`);
+                const other = otherZones[idx];
+                if (!cell || !other) return;
+                const isMatch = z.min === other.min && z.max === other.max;
+                const badge = isMatch
+                    ? '<span class="cmp-badge match">Match</span>'
+                    : '<span class="cmp-badge diff">Differs</span>';
+                cell.innerHTML = `${other.min}&ndash;${other.max} bpm${badge}`;
+            });
+        }
+
+        function getZoneInputBounds(idx, field) {
+            if (field === 'min') {
+                const low = idx === 0 ? 30 : activeZones[idx - 1].min + 1;
+                const high = activeZones[idx].max;
+                return { low, high };
+            }
+            const low = activeZones[idx].min;
+            const high = idx === activeZones.length - 1 ? 250 : activeZones[idx + 1].max - 1;
+            return { low, high };
+        }
+
+        function applyZoneValue(idx, field, val) {
+            activeZones[idx][field] = val;
+            if (field === 'min' && idx > 0) {
+                const adjMax = val - 1;
+                activeZones[idx - 1].max = adjMax;
+                const adjInput = document.getElementById(`zMax_${idx - 1}`);
+                if (adjInput) adjInput.value = String(adjMax);
+            } else if (field === 'max' && idx < activeZones.length - 1) {
+                const adjMin = val + 1;
+                activeZones[idx + 1].min = adjMin;
+                const adjInput = document.getElementById(`zMin_${idx + 1}`);
+                if (adjInput) adjInput.value = String(adjMin);
+            }
+            recomputeAndRenderChart();
         }
 
         function onZoneInput(idx, field, rawVal) {
             const parsed = parseInt(rawVal.trim(), 10);
-            if (!isNaN(parsed)) {
-                activeZones[idx][field] = parsed;
-                recomputeAndRenderChart();
+            if (isNaN(parsed)) return;
+
+            const { low, high } = getZoneInputBounds(idx, field);
+            if (parsed < low || parsed > high) return;
+
+            setFeedback('', false);
+            applyZoneValue(idx, field, parsed);
+        }
+
+        function onZoneCommit(idx, field, rawVal) {
+            const inputEl = document.getElementById(field === 'min' ? `zMin_${idx}` : `zMax_${idx}`);
+            const parsed = parseInt(rawVal.trim(), 10);
+            if (isNaN(parsed)) {
+                if (inputEl) inputEl.value = String(activeZones[idx][field]);
+                setFeedback(`Zone ${idx + 1} ${field} BPM must be a number.`, true);
+                return;
             }
+
+            const { low, high } = getZoneInputBounds(idx, field);
+            if (parsed < low || parsed > high) {
+                const clamped = Math.max(low, Math.min(high, parsed));
+                if (inputEl) inputEl.value = String(clamped);
+                applyZoneValue(idx, field, clamped);
+                setFeedback(`Zone ${idx + 1} ${field} BPM clamped to ${clamped} (valid range: ${low}–${high} bpm) to prevent zone overlap.`, true);
+                return;
+            }
+
+            setFeedback('', false);
+            applyZoneValue(idx, field, parsed);
         }
 
         function computeClientDistribution() {
@@ -803,6 +976,26 @@
             return { dist, totalSeconds };
         }
 
+        function renderBPMZoneLegend(dist, totalSeconds) {
+            const legendEl = document.getElementById('bpmZoneLegend');
+            if (!legendEl) return;
+
+            if (!totalSeconds || totalSeconds === 0 || dist.length !== 5) {
+                legendEl.style.display = 'none';
+                legendEl.innerHTML = '';
+                return;
+            }
+
+            legendEl.innerHTML = dist.map((item, idx) => `
+                <div class="bpm-legend-item">
+                    <span class="zone-dot" style="background-color: ${ZONE_COLORS[idx]};"></span>
+                    <span class="bpm-legend-name">${escapeHtml(item.name)}</span>
+                    <span class="bpm-legend-pct" style="color: ${ZONE_COLORS[idx]};">${item.percent.toFixed(1)}%</span>
+                </div>
+            `).join('');
+            legendEl.style.display = 'flex';
+        }
+
         function recomputeAndRenderChart() {
             const { dist, totalSeconds } = computeClientDistribution();
 
@@ -813,81 +1006,8 @@
                 if (pctEl) pctEl.textContent = `${item.percent.toFixed(1)}%`;
             });
 
-            const wrapper = document.getElementById('chartWrapper');
-            const emptyState = document.getElementById('emptyState');
-
-            if (totalSeconds === 0) {
-                wrapper.style.display = 'none';
-                emptyState.style.display = 'block';
-                if (chartInstance) {
-                    chartInstance.destroy();
-                    chartInstance = null;
-                }
-                renderBPMHistogramChart(0);
-                return;
-            }
-
-            wrapper.style.display = 'block';
-            emptyState.style.display = 'none';
-
-            const labels = dist.map(d => `${d.name} (${d.min}-${d.max} bpm)`);
-            const values = dist.map(d => d.percent);
-
-            const ctx = document.getElementById('hrZonesChart').getContext('2d');
-            if (chartInstance) {
-                chartInstance.data.labels = labels;
-                chartInstance.data.datasets[0].data = values;
-                chartInstance.update();
-                renderBPMHistogramChart(totalSeconds);
-                return;
-            }
-
-            chartInstance = new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: '% of Training Time',
-                        data: values,
-                        backgroundColor: ZONE_COLORS,
-                        borderRadius: 6,
-                        maxBarThickness: 72
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { display: false },
-                        tooltip: {
-                            callbacks: {
-                                label: function(context) {
-                                    const idx = context.dataIndex;
-                                    const current = computeClientDistribution().dist[idx];
-                                    return ` ${current.percent.toFixed(1)}% (${formatDuration(current.seconds)})`;
-                                }
-                            }
-                        }
-                    },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            max: 100,
-                            ticks: {
-                                callback: v => v + '%'
-                            },
-                            title: {
-                                display: true,
-                                text: 'Percentage of Training Time (%)'
-                            }
-                        },
-                        x: {
-                            grid: { display: false }
-                        }
-                    }
-                }
-            });
-
+            updateComparisonCells();
+            renderBPMZoneLegend(dist, totalSeconds);
             renderBPMHistogramChart(totalSeconds);
         }
 
@@ -1079,8 +1199,12 @@
                     setFeedback(msg || 'Invalid zones.', true);
                     return;
                 }
+                savedZones = zonesToSave.map(z => ({ ...z }));
+                hasSavedZones = true;
+                zoneSourceMode = 'saved';
                 activeZones = zonesToSave;
-                setSourceBadge(true);
+                updateZoneSourceUI();
+                renderZonesTable();
                 setFeedback('Zones saved!', false);
                 recomputeAndRenderChart();
             } catch (err) {
@@ -1097,8 +1221,11 @@
                     body: JSON.stringify({ sport, reset: true })
                 });
                 if (!res.ok) throw new Error('Reset failed');
+                savedZones = [];
+                hasSavedZones = false;
+                zoneSourceMode = 'estimated';
                 activeZones = estimatedZones.map(z => ({ ...z }));
-                setSourceBadge(false);
+                updateZoneSourceUI();
                 renderZonesTable();
                 recomputeAndRenderChart();
                 setFeedback('Reset to data-estimated zones.', false);
