@@ -286,6 +286,76 @@
             color: var(--text-muted);
             border-top: 1px solid var(--border);
         }
+
+        @media (max-width: 768px) {
+            .header-inner {
+                height: auto;
+                flex-wrap: wrap;
+                padding: 0.65rem 1rem;
+                gap: 0.5rem 0.75rem;
+            }
+            nav {
+                order: 3;
+                width: 100%;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+                padding-bottom: 0.15rem;
+            }
+            nav::-webkit-scrollbar { display: none; }
+            .nav-link {
+                white-space: nowrap;
+                flex-shrink: 0;
+                font-size: 0.84rem;
+                padding: 0.35rem 0.65rem;
+            }
+            .status-pill {
+                font-size: 0.75rem;
+                padding: 0.3rem 0.6rem;
+            }
+            .btn-sync {
+                font-size: 0.78rem;
+                padding: 0.38rem 0.75rem;
+            }
+            main {
+                padding: 1rem;
+            }
+            .controls-card {
+                padding: 0.9rem 1rem;
+                gap: 0.75rem;
+            }
+            .controls-group {
+                width: 100%;
+                gap: 0.5rem;
+            }
+            .select-input {
+                max-width: 100%;
+                flex: 1 1 auto;
+            }
+            .kpi-grid {
+                grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+                gap: 0.75rem;
+                margin-top: 1rem;
+                margin-bottom: 1rem;
+            }
+            .kpi-card {
+                padding: 1rem;
+            }
+            .kpi-val {
+                font-size: 1.5rem;
+            }
+            .chart-card {
+                padding: 1rem;
+                margin-bottom: 1rem;
+            }
+            .chart-header {
+                flex-wrap: wrap;
+                gap: 0.5rem;
+            }
+            .chart-container {
+                height: 250px;
+            }
+        }
     </style>
 </head>
 <body>

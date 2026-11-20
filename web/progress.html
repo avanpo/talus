@@ -476,12 +476,119 @@
             color: var(--text-muted);
         }
 
+        .chart-header-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+        .inline-check {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            font-size: 0.84rem;
+            font-weight: 600;
+            color: var(--text-main);
+            background: var(--bg-subtle);
+            border: 1px solid var(--border);
+            padding: 0.35rem 0.75rem;
+            border-radius: 6px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .inline-check input {
+            accent-color: var(--primary);
+            cursor: pointer;
+        }
+        .inline-check.disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+        .empty-chart-msg {
+            display: none;
+            text-align: center;
+            padding: 2.5rem 1rem;
+            color: var(--text-muted);
+            font-size: 0.88rem;
+        }
+
         footer {
             text-align: center;
             padding: 1.5rem;
             font-size: 0.8rem;
             color: var(--text-dim);
             border-top: 1px solid var(--border);
+        }
+
+        @media (max-width: 768px) {
+            .header-inner {
+                height: auto;
+                flex-wrap: wrap;
+                padding: 0.65rem 1rem;
+                gap: 0.5rem 0.75rem;
+            }
+            nav {
+                order: 3;
+                width: 100%;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+                padding-bottom: 0.15rem;
+            }
+            nav::-webkit-scrollbar { display: none; }
+            .nav-link {
+                white-space: nowrap;
+                flex-shrink: 0;
+                font-size: 0.84rem;
+                padding: 0.35rem 0.65rem;
+            }
+            .status-pill {
+                font-size: 0.75rem;
+                padding: 0.3rem 0.6rem;
+            }
+            .btn-sync {
+                font-size: 0.78rem;
+                padding: 0.38rem 0.75rem;
+            }
+            main {
+                padding: 1rem;
+            }
+            .controls-card {
+                padding: 0.9rem 1rem;
+                gap: 0.75rem;
+            }
+            .controls-group {
+                width: 100%;
+                gap: 0.5rem;
+            }
+            .select-input {
+                min-width: 0 !important;
+                width: 100%;
+                max-width: 100%;
+            }
+            .toggle-control {
+                width: 100%;
+            }
+            .stat-cards-grid {
+                grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+                gap: 0.75rem;
+            }
+            .stat-card {
+                padding: 0.85rem 1rem;
+            }
+            .chart-card {
+                padding: 1rem;
+            }
+            .chart-header {
+                flex-wrap: wrap;
+                gap: 0.5rem;
+            }
+            .chart-container {
+                height: 260px;
+            }
+            .table-responsive {
+                -webkit-overflow-scrolling: touch;
+            }
         }
     </style>
 </head>
@@ -570,11 +677,50 @@
             </div>
         </div>
 
-        <!-- Overall Fitness Trends Section -->
+        <!-- Section 1: Training Load & Readiness (CTL / ATL / TSB) -->
         <div class="section-header">
             <div>
-                <h2 class="section-title">Cardiovascular Fitness Trends</h2>
-                <div class="section-subtitle">Macro-level physiological efficiency and aerobic decoupling across recorded activities.</div>
+                <h2 class="section-title">Training Load &amp; Readiness</h2>
+                <div class="section-subtitle">Heart-rate TRIMP fitness (42-day CTL), acute fatigue (7-day ATL), and form (TSB = CTL &minus; ATL).</div>
+            </div>
+        </div>
+
+        <div class="stat-cards-grid" id="loadStatsGrid" style="display:none;">
+            <div class="stat-card">
+                <div class="stat-card-label">Fitness (42d CTL)</div>
+                <div class="stat-card-value" id="statCTL">-</div>
+                <div class="stat-card-sub">Chronic daily HR load</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-label">Fatigue (7d ATL)</div>
+                <div class="stat-card-value" id="statATL">-</div>
+                <div class="stat-card-sub">Acute recent HR load</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-card-label">Form (TSB)</div>
+                <div class="stat-card-value" id="statTSB">-</div>
+                <div class="stat-card-sub" id="statTSBSub">Freshness balance</div>
+            </div>
+        </div>
+
+        <div class="chart-card">
+            <div class="chart-header">
+                <div>
+                    <h3 class="chart-title">Fitness, Fatigue &amp; Form (CTL / ATL / TSB)</h3>
+                    <div class="chart-desc">Daily HR TRIMP exponentially weighted moving averages. Positive Form (TSB) indicates freshness; negative indicates productive training overload.</div>
+                </div>
+            </div>
+            <div class="chart-container" id="trainingLoadChartWrap">
+                <canvas id="trainingLoadChart"></canvas>
+            </div>
+            <div class="empty-chart-msg" id="trainingLoadEmpty">No heart rate load data available for the selected filter.</div>
+        </div>
+
+        <!-- Section 2: Cardiovascular Efficiency & Heat -->
+        <div class="section-header">
+            <div>
+                <h2 class="section-title">Cardiovascular Efficiency &amp; Heat</h2>
+                <div class="section-subtitle">Macro-level aerobic efficiency normalized for elevation, fatigue, and ambient temperature.</div>
             </div>
         </div>
 
@@ -582,11 +728,65 @@
             <div class="chart-header">
                 <div>
                     <h3 class="chart-title">Cardiovascular Efficiency Factor (EF) Over Time</h3>
-                    <div class="chart-desc">Distance covered per heartbeat (Speed in m/min &divide; HR in bpm, normalized for elevation).</div>
+                    <div class="chart-desc" id="efChartDesc">Distance covered per heartbeat (Speed in m/min &divide; HR in bpm, normalized for elevation).</div>
+                </div>
+                <div class="chart-header-controls">
+                    <label class="inline-check" id="heatAdjustLabel" title="Normalize EF to a 15°C (59°F) baseline using your personal EF-vs-temperature regression">
+                        <input type="checkbox" id="heatAdjustToggle" onchange="renderMacroEFChart()">
+                        <span>Heat-Adjusted (15&deg;C)</span>
+                    </label>
                 </div>
             </div>
             <div class="chart-container">
                 <canvas id="efChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Section 3: Pace at Fixed HR & Running Economy -->
+        <div class="section-header">
+            <div>
+                <h2 class="section-title">Pace at Fixed HR &amp; Aerobic Economy</h2>
+                <div class="section-subtitle">Track flat-terrain pace at a constant heart rate alongside meters per heartbeat and running stride length.</div>
+            </div>
+        </div>
+
+        <div class="chart-card">
+            <div class="chart-header">
+                <div>
+                    <h3 class="chart-title" id="fixedHRTitle">Flat Pace at Fixed Heart Rate</h3>
+                    <div class="chart-desc">Average pace on flat terrain (&plusmn;2.5% grade) within &plusmn;2.5 bpm of the selected reference heart rate. Higher on the chart = faster.</div>
+                </div>
+                <div class="chart-header-controls">
+                    <span class="controls-label" style="font-size:0.78rem; font-weight:700; text-transform:uppercase; color:var(--text-muted);">Ref HR:</span>
+                    <select id="refHRSelect" class="select-input" onchange="renderFixedHRChart()" style="min-width: 120px; padding: 0.38rem 0.75rem; font-size: 0.85rem;">
+                        <option value="145">145 bpm</option>
+                    </select>
+                </div>
+            </div>
+            <div class="chart-container" id="fixedHRChartWrap">
+                <canvas id="fixedHRChart"></canvas>
+            </div>
+            <div class="empty-chart-msg" id="fixedHREmpty">Not enough flat-terrain stream samples at this heart rate bin yet. Try selecting another Ref HR above.</div>
+        </div>
+
+        <div class="chart-card">
+            <div class="chart-header">
+                <div>
+                    <h3 class="chart-title">Aerobic Economy &amp; Mechanics (Meters/Beat &amp; Stride Length)</h3>
+                    <div class="chart-desc">Raw distance covered per heartbeat paired with running stride length (7-activity moving averages).</div>
+                </div>
+            </div>
+            <div class="chart-container" id="economyChartWrap">
+                <canvas id="economyChart"></canvas>
+            </div>
+            <div class="empty-chart-msg" id="economyEmpty">No economy/cadence data available for the selected filter.</div>
+        </div>
+
+        <!-- Section 4: Durability & Recovery -->
+        <div class="section-header">
+            <div>
+                <h2 class="section-title">Durability &amp; Heart Rate Recovery</h2>
+                <div class="section-subtitle">Cardiac drift, late-run fatigue resistance on long efforts, and 60-second post-effort heart rate recovery.</div>
             </div>
         </div>
 
@@ -600,6 +800,32 @@
             <div class="chart-container">
                 <canvas id="decouplingChart"></canvas>
             </div>
+        </div>
+
+        <div class="chart-card">
+            <div class="chart-header">
+                <div>
+                    <h3 class="chart-title">Long-Run Durability (Late-Run EF Retention after 60+ min)</h3>
+                    <div class="chart-desc">Percentage of fresh efficiency (min 5&ndash;30) retained after 60+ minutes on long activities (&ge; 70 min). Higher / closer to 100% = better fatigue resistance.</div>
+                </div>
+            </div>
+            <div class="chart-container" id="durabilityChartWrap">
+                <canvas id="durabilityChart"></canvas>
+            </div>
+            <div class="empty-chart-msg" id="durabilityEmpty">No stream-backed activities &ge; 70 minutes found for the selected filter.</div>
+        </div>
+
+        <div class="chart-card">
+            <div class="chart-header">
+                <div>
+                    <h3 class="chart-title">Heart Rate Recovery (HRR60 &mdash; 60s Post-Effort Drop)</h3>
+                    <div class="chart-desc">Maximum valid 60-second heart rate drop (bpm) following sustained efforts (&ge; 135 bpm). Faster drops indicate stronger autonomic recovery.</div>
+                </div>
+            </div>
+            <div class="chart-container" id="hrrChartWrap">
+                <canvas id="hrrChart"></canvas>
+            </div>
+            <div class="empty-chart-msg" id="hrrEmpty">No qualifying 60-second post-effort HR recovery drops detected for the selected filter.</div>
         </div>
 
         <!-- Repeated Segment Progressions Section -->
@@ -710,6 +936,11 @@
         let segmentChartInstance = null;
         let efChartInstance = null;
         let decouplingChartInstance = null;
+        let trainingLoadChartInstance = null;
+        let fixedHRChartInstance = null;
+        let economyChartInstance = null;
+        let durabilityChartInstance = null;
+        let hrrChartInstance = null;
 
         function onSportChange() {
             currentSport = document.getElementById('sportSelect').value;
@@ -786,8 +1017,15 @@
                 }
 
                 initSegmentSelector();
+                updateHeatModelUI();
+                initRefHRSelector();
+                renderTrainingLoadChart();
                 renderMacroEFChart();
+                renderFixedHRChart();
+                renderEconomyChart();
                 renderDecouplingChart();
+                renderDurabilityChart();
+                renderHRRChart();
             } catch (e) {
                 console.error(e);
                 document.getElementById('segmentEffortsTableBody').innerHTML = '<tr><td colspan="9" style="text-align:center; color:var(--rose);">Error loading segment data.</td></tr>';
@@ -1051,7 +1289,9 @@
             const tbody = document.getElementById('segmentEffortsTableBody');
             let html = '';
 
-            seg.efforts.forEach(eff => {
+            const effortsDesc = [...seg.efforts].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+            effortsDesc.forEach(eff => {
                 const paceCol = adjusted
                     ? `<div><span class="cell-highlight">${eff.adjusted_pace}</span> <span class="cell-subdued">(${eff.avg_pace})</span></div>`
                     : `<div><span class="cell-highlight">${eff.avg_pace}</span> <span class="cell-subdued">(${eff.adjusted_pace})</span></div>`;
@@ -1087,6 +1327,68 @@
             tbody.innerHTML = html;
         }
 
+        function computeMovingAvg(arr, windowSize = 7) {
+            const ma = [];
+            for (let i = 0; i < arr.length; i++) {
+                let sum = 0;
+                let cnt = 0;
+                const start = Math.max(0, i - (windowSize - 1));
+                for (let k = start; k <= i; k++) {
+                    if (arr[k] !== null && arr[k] !== undefined && !isNaN(arr[k])) {
+                        sum += arr[k];
+                        cnt++;
+                    }
+                }
+                ma.push(cnt > 0 ? Math.round((sum / cnt) * 1000) / 1000 : null);
+            }
+            return ma;
+        }
+
+        function formatPaceMinVal(minVal) {
+            if (!minVal || minVal <= 0 || isNaN(minVal)) return '-';
+            let mins = Math.floor(minVal);
+            let secs = Math.round((minVal - mins) * 60);
+            if (secs === 60) { mins++; secs = 0; }
+            return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+        }
+
+        function updateHeatModelUI() {
+            const toggle = document.getElementById('heatAdjustToggle');
+            const label = document.getElementById('heatAdjustLabel');
+            const desc = document.getElementById('efChartDesc');
+            const tm = progressData && progressData.temp_model;
+
+            if (tm && tm.enabled) {
+                toggle.disabled = false;
+                label.classList.remove('disabled');
+                const sign = tm.penalty_pct_10c > 0 ? '+' : '';
+                desc.textContent = `Distance covered per heartbeat (normalized for elevation). Personal heat curve: ${sign}${tm.penalty_pct_10c}% EF per +10°C (baseline ${tm.baseline_temp_c}°C, n=${tm.sample_count}).`;
+            } else {
+                toggle.checked = false;
+                toggle.disabled = true;
+                label.classList.add('disabled');
+                desc.textContent = 'Distance covered per heartbeat (Speed in m/min ÷ HR in bpm, normalized for elevation). Need ≥15 activities with temperature across ≥8°C spread for heat adjustment.';
+            }
+        }
+
+        function initRefHRSelector() {
+            const sel = document.getElementById('refHRSelect');
+            const bins = (progressData && progressData.available_ref_hrs) || [];
+            const prev = parseInt(sel.value, 10);
+            if (bins.length === 0) {
+                sel.innerHTML = '<option value="145">145 bpm</option>';
+                return;
+            }
+            sel.innerHTML = bins.map(b => `<option value="${b}">${b} bpm</option>`).join('');
+            if (bins.includes(prev)) {
+                sel.value = String(prev);
+            } else if (progressData.default_ref_hr && bins.includes(progressData.default_ref_hr)) {
+                sel.value = String(progressData.default_ref_hr);
+            } else {
+                sel.value = String(bins[Math.floor(bins.length / 2)]);
+            }
+        }
+
         function renderMacroEFChart() {
             if (!progressData || !progressData.runs) return;
 
@@ -1104,17 +1406,7 @@
             const rawEFs = runs.map(r => r.ef);
             const adjEFs = runs.map(r => r.adjusted_ef || r.ef);
             const adjusted = isFatigueAdjusted();
-
-            const computeMA = (arr) => {
-                const ma = [];
-                for (let i = 0; i < arr.length; i++) {
-                    const start = Math.max(0, i - 6);
-                    const slice = arr.slice(start, i + 1);
-                    const avg = slice.reduce((a, b) => a + b, 0) / slice.length;
-                    ma.push(Math.round(avg * 1000) / 1000);
-                }
-                return ma;
-            };
+            const heatAdj = document.getElementById('heatAdjustToggle').checked && progressData.temp_model && progressData.temp_model.enabled;
 
             const datasets = [];
 
@@ -1143,7 +1435,7 @@
                     type: 'line',
                     showLine: true,
                     label: '7-Activity Smoothed Trend (Adjusted MA)',
-                    data: computeMA(adjEFs),
+                    data: computeMovingAvg(adjEFs, 7),
                     borderColor: '#2563eb',
                     backgroundColor: 'transparent',
                     borderWidth: 2.5,
@@ -1165,10 +1457,27 @@
                     type: 'line',
                     showLine: true,
                     label: '7-Activity Smoothed Trend (Moving Avg)',
-                    data: computeMA(rawEFs),
+                    data: computeMovingAvg(rawEFs, 7),
                     borderColor: '#00b4d8',
                     backgroundColor: 'transparent',
                     borderWidth: 2.5,
+                    tension: 0.3,
+                    pointRadius: 0
+                });
+            }
+
+            if (heatAdj) {
+                const tempEFs = runs.map(r => (r.has_temp && r.temp_adjusted_ef > 0) ? r.temp_adjusted_ef : null);
+                datasets.push({
+                    type: 'line',
+                    showLine: true,
+                    spanGaps: true,
+                    label: 'Heat-Adjusted Trend (15°C Baseline)',
+                    data: computeMovingAvg(tempEFs, 7),
+                    borderColor: '#d97706',
+                    backgroundColor: 'transparent',
+                    borderWidth: 2.5,
+                    borderDash: [6, 3],
                     tension: 0.3,
                     pointRadius: 0
                 });
@@ -1196,12 +1505,19 @@
                                 afterBody: function(items) {
                                     const idx = items[0].dataIndex;
                                     const run = runs[idx];
-                                    return [
+                                    const lines = [
                                         `Activity: ${run.name}`,
                                         `Pace: ${run.avg_pace} (Adj: ${run.adjusted_pace || run.avg_pace})`,
                                         `Avg HR: ${run.avg_hr} bpm`,
                                         `Prior 7-Day Load: ${run.prior_7days_dist_fmt} (${run.prior_7days_count} runs) [${run.pre_run_fatigue_pct >= 0 ? '+' : ''}${run.pre_run_fatigue_pct}%]`
                                     ];
+                                    if (run.has_temp) {
+                                        const tempLine = run.temp_adjusted_ef > 0
+                                            ? `Temp: ${run.temp_c}°C (15°C-Adj EF: ${run.temp_adjusted_ef.toFixed(3)})`
+                                            : `Temp: ${run.temp_c}°C`;
+                                        lines.push(tempLine);
+                                    }
+                                    return lines;
                                 }
                             }
                         }
@@ -1278,6 +1594,509 @@
                             ticks: { color: '#64748b', callback: val => `${val}%` },
                             grid: { color: '#f1f5f9' },
                             title: { display: true, text: 'Cardiac Drift % (1st half vs 2nd half)', color: '#475569', font: { weight: 600 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderTrainingLoadChart() {
+            const pts = (progressData && progressData.training_load) || [];
+            const wrap = document.getElementById('trainingLoadChartWrap');
+            const empty = document.getElementById('trainingLoadEmpty');
+            const grid = document.getElementById('loadStatsGrid');
+
+            if (pts.length === 0) {
+                wrap.style.display = 'none';
+                empty.style.display = 'block';
+                grid.style.display = 'none';
+                if (trainingLoadChartInstance) {
+                    trainingLoadChartInstance.destroy();
+                    trainingLoadChartInstance = null;
+                }
+                return;
+            }
+
+            wrap.style.display = 'block';
+            empty.style.display = 'none';
+            grid.style.display = 'grid';
+
+            const latest = pts[pts.length - 1];
+            document.getElementById('statCTL').textContent = latest.ctl.toFixed(1);
+            document.getElementById('statATL').textContent = latest.atl.toFixed(1);
+            const tsbEl = document.getElementById('statTSB');
+            tsbEl.textContent = `${latest.tsb >= 0 ? '+' : ''}${latest.tsb.toFixed(1)}`;
+            let tsbStatus = 'Optimal training zone';
+            if (latest.tsb >= 15) tsbStatus = 'Fresh / Peaked';
+            else if (latest.tsb >= 5) tsbStatus = 'Recovered / Ready';
+            else if (latest.tsb < -20) tsbStatus = 'High fatigue / Overreaching';
+            else if (latest.tsb < -5) tsbStatus = 'Productive overload';
+            document.getElementById('statTSBSub').textContent = `${tsbStatus} (as of ${latest.date})`;
+
+            const labels = pts.map(p => p.date);
+            const ctls = pts.map(p => p.ctl);
+            const atls = pts.map(p => p.atl);
+            const tsbs = pts.map(p => p.tsb);
+
+            const ctx = document.getElementById('trainingLoadChart').getContext('2d');
+            if (trainingLoadChartInstance) trainingLoadChartInstance.destroy();
+            trainingLoadChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Fitness (CTL, 42d)',
+                            data: ctls,
+                            borderColor: '#2563eb',
+                            backgroundColor: 'rgba(37, 99, 235, 0.08)',
+                            fill: true,
+                            borderWidth: 2.5,
+                            pointRadius: 0,
+                            tension: 0.2,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Fatigue (ATL, 7d)',
+                            data: atls,
+                            borderColor: '#d97706',
+                            backgroundColor: 'transparent',
+                            borderWidth: 1.8,
+                            pointRadius: 0,
+                            tension: 0.2,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Form (TSB = CTL − ATL)',
+                            data: tsbs,
+                            borderColor: '#16a34a',
+                            backgroundColor: 'rgba(22, 163, 74, 0.12)',
+                            fill: true,
+                            borderWidth: 1.5,
+                            borderDash: [4, 3],
+                            pointRadius: 0,
+                            tension: 0.2,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    normalized: true,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { labels: { color: '#334155', font: { weight: 600 } } },
+                        tooltip: {
+                            backgroundColor: '#0f172a',
+                            titleColor: '#f8fafc',
+                            bodyColor: '#e2e8f0',
+                            padding: 10,
+                            cornerRadius: 8,
+                            callbacks: {
+                                afterBody: function(items) {
+                                    const p = pts[items[0].dataIndex];
+                                    return p.trimp > 0 ? [`Daily HR TRIMP: ${p.trimp.toFixed(1)}`] : ['Rest day (0 TRIMP)'];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#64748b', autoSkip: true, maxTicksLimit: 18 },
+                            grid: { display: false }
+                        },
+                        y: {
+                            position: 'left',
+                            beginAtZero: true,
+                            ticks: { color: '#64748b' },
+                            grid: { color: '#f1f5f9' },
+                            title: { display: true, text: 'Load (TRIMP/day)', color: '#475569', font: { weight: 600 } }
+                        },
+                        y1: {
+                            position: 'right',
+                            ticks: { color: '#16a34a' },
+                            grid: { drawOnChartArea: false },
+                            title: { display: true, text: 'Form (TSB)', color: '#16a34a', font: { weight: 600 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderFixedHRChart() {
+            const runs = (progressData && progressData.runs) || [];
+            const refHR = document.getElementById('refHRSelect').value;
+            const unitLabel = (progressData && progressData.unit === 'mi') ? '/mi' : '/km';
+            document.getElementById('fixedHRTitle').textContent = `Flat Pace at ${refHR} bpm`;
+
+            const matched = runs.filter(r => r.flat_pace_by_hr && r.flat_pace_by_hr[refHR] > 0);
+            const wrap = document.getElementById('fixedHRChartWrap');
+            const empty = document.getElementById('fixedHREmpty');
+
+            if (matched.length === 0) {
+                wrap.style.display = 'none';
+                empty.style.display = 'block';
+                if (fixedHRChartInstance) {
+                    fixedHRChartInstance.destroy();
+                    fixedHRChartInstance = null;
+                }
+                return;
+            }
+
+            wrap.style.display = 'block';
+            empty.style.display = 'none';
+
+            const labels = matched.map(r => r.date_fmt);
+            const paces = matched.map(r => r.flat_pace_by_hr[refHR]);
+            const ma = computeMovingAvg(paces, 7);
+
+            const ctx = document.getElementById('fixedHRChart').getContext('2d');
+            if (fixedHRChartInstance) fixedHRChartInstance.destroy();
+            fixedHRChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: `Flat Pace at ${refHR} bpm (${unitLabel})`,
+                            showLine: false,
+                            data: paces,
+                            backgroundColor: 'rgba(139, 92, 246, 0.55)',
+                            borderColor: '#7c3aed',
+                            pointRadius: 4,
+                            pointHoverRadius: 6
+                        },
+                        {
+                            label: '7-Activity Trend',
+                            data: ma,
+                            borderColor: '#7c3aed',
+                            backgroundColor: 'transparent',
+                            borderWidth: 2.5,
+                            tension: 0.3,
+                            pointRadius: 0
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    normalized: true,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { labels: { color: '#334155', font: { weight: 600 } } },
+                        tooltip: {
+                            backgroundColor: '#0f172a',
+                            titleColor: '#f8fafc',
+                            bodyColor: '#e2e8f0',
+                            padding: 10,
+                            cornerRadius: 8,
+                            callbacks: {
+                                label: ctx => ` ${ctx.dataset.label}: ${formatPaceMinVal(ctx.parsed.y)} ${unitLabel}`,
+                                afterBody: items => {
+                                    const r = matched[items[0].dataIndex];
+                                    return [`Activity: ${r.name}`, `Overall Avg HR: ${r.avg_hr} bpm`];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#64748b', autoSkip: true, maxTicksLimit: 20 },
+                            grid: { display: false }
+                        },
+                        y: {
+                            reverse: true,
+                            ticks: {
+                                color: '#64748b',
+                                callback: val => formatPaceMinVal(val)
+                            },
+                            grid: { color: '#f1f5f9' },
+                            title: { display: true, text: `Flat Pace (${unitLabel}, faster = higher)`, color: '#475569', font: { weight: 600 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderEconomyChart() {
+            const runs = (progressData && progressData.runs) || [];
+            const valid = runs.filter(r => r.meters_per_beat > 0 || r.stride_length_m > 0);
+            const wrap = document.getElementById('economyChartWrap');
+            const empty = document.getElementById('economyEmpty');
+
+            if (valid.length === 0) {
+                wrap.style.display = 'none';
+                empty.style.display = 'block';
+                if (economyChartInstance) {
+                    economyChartInstance.destroy();
+                    economyChartInstance = null;
+                }
+                return;
+            }
+
+            wrap.style.display = 'block';
+            empty.style.display = 'none';
+
+            const labels = valid.map(r => r.date_fmt);
+            const mpb = valid.map(r => r.meters_per_beat > 0 ? r.meters_per_beat : null);
+            const stride = valid.map(r => r.stride_length_m > 0 ? r.stride_length_m : null);
+            const hasStride = stride.some(v => v !== null);
+
+            const datasets = [
+                {
+                    label: 'Meters / Heartbeat (7-Act MA)',
+                    data: computeMovingAvg(mpb, 7),
+                    borderColor: '#16a34a',
+                    backgroundColor: 'transparent',
+                    borderWidth: 2.5,
+                    tension: 0.3,
+                    pointRadius: 0,
+                    spanGaps: true,
+                    yAxisID: 'y'
+                }
+            ];
+
+            if (hasStride) {
+                datasets.push({
+                    label: 'Stride Length (m, 7-Act MA)',
+                    data: computeMovingAvg(stride, 7),
+                    borderColor: '#7c3aed',
+                    backgroundColor: 'transparent',
+                    borderWidth: 2.2,
+                    borderDash: [5, 3],
+                    tension: 0.3,
+                    pointRadius: 0,
+                    spanGaps: true,
+                    yAxisID: 'y1'
+                });
+            }
+
+            const ctx = document.getElementById('economyChart').getContext('2d');
+            if (economyChartInstance) economyChartInstance.destroy();
+            economyChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: { labels, datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    normalized: true,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { labels: { color: '#334155', font: { weight: 600 } } },
+                        tooltip: {
+                            backgroundColor: '#0f172a',
+                            titleColor: '#f8fafc',
+                            bodyColor: '#e2e8f0',
+                            padding: 10,
+                            cornerRadius: 8,
+                            callbacks: {
+                                afterBody: items => {
+                                    const r = valid[items[0].dataIndex];
+                                    const lines = [`Activity: ${r.name}`];
+                                    if (r.meters_per_beat > 0) lines.push(`Raw m/beat: ${r.meters_per_beat.toFixed(3)} m`);
+                                    if (r.stride_length_m > 0) lines.push(`Raw Stride: ${r.stride_length_m.toFixed(2)} m`);
+                                    return lines;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#64748b', autoSkip: true, maxTicksLimit: 20 },
+                            grid: { display: false }
+                        },
+                        y: {
+                            position: 'left',
+                            ticks: { color: '#16a34a' },
+                            grid: { color: '#f1f5f9' },
+                            title: { display: true, text: 'Meters per Heartbeat (m)', color: '#16a34a', font: { weight: 600 } }
+                        },
+                        y1: {
+                            display: hasStride,
+                            position: 'right',
+                            ticks: { color: '#7c3aed', callback: v => `${v.toFixed(2)}m` },
+                            grid: { drawOnChartArea: false },
+                            title: { display: true, text: 'Stride Length (m)', color: '#7c3aed', font: { weight: 600 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderDurabilityChart() {
+            const runs = (progressData && progressData.runs) || [];
+            const valid = runs.filter(r => r.has_durability);
+            const wrap = document.getElementById('durabilityChartWrap');
+            const empty = document.getElementById('durabilityEmpty');
+
+            if (valid.length === 0) {
+                wrap.style.display = 'none';
+                empty.style.display = 'block';
+                if (durabilityChartInstance) {
+                    durabilityChartInstance.destroy();
+                    durabilityChartInstance = null;
+                }
+                return;
+            }
+
+            wrap.style.display = 'block';
+            empty.style.display = 'none';
+
+            const labels = valid.map(r => r.date_fmt);
+            const vals = valid.map(r => r.durability_pct);
+            const ptColors = vals.map(v => v >= 95 ? '#16a34a' : (v >= 90 ? '#d97706' : '#e11d48'));
+
+            const ctx = document.getElementById('durabilityChart').getContext('2d');
+            if (durabilityChartInstance) durabilityChartInstance.destroy();
+            durabilityChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: 'Late-Run EF Retention (%)',
+                            showLine: false,
+                            data: vals,
+                            backgroundColor: ptColors,
+                            borderColor: ptColors,
+                            pointRadius: 5,
+                            pointHoverRadius: 7
+                        },
+                        {
+                            label: '7-Long-Run Trend',
+                            data: computeMovingAvg(vals, 7),
+                            borderColor: '#0ea5e9',
+                            backgroundColor: 'transparent',
+                            borderWidth: 2.5,
+                            tension: 0.3,
+                            pointRadius: 0
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    normalized: true,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { labels: { color: '#334155', font: { weight: 600 } } },
+                        tooltip: {
+                            backgroundColor: '#0f172a',
+                            titleColor: '#f8fafc',
+                            bodyColor: '#e2e8f0',
+                            padding: 10,
+                            cornerRadius: 8,
+                            callbacks: {
+                                label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%`,
+                                afterBody: items => {
+                                    const r = valid[items[0].dataIndex];
+                                    return [`Activity: ${r.name}`, `Duration: ${r.moving_time_fmt} • Dist: ${r.distance} ${progressData.unit}`];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#64748b', autoSkip: true, maxTicksLimit: 20 },
+                            grid: { display: false }
+                        },
+                        y: {
+                            ticks: { color: '#64748b', callback: v => `${v}%` },
+                            grid: { color: '#f1f5f9' },
+                            title: { display: true, text: 'Late-Run EF % of Fresh EF (60+ min vs 5–30 min)', color: '#475569', font: { weight: 600 } }
+                        }
+                    }
+                }
+            });
+        }
+
+        function renderHRRChart() {
+            const runs = (progressData && progressData.runs) || [];
+            const valid = runs.filter(r => r.has_hrr60);
+            const wrap = document.getElementById('hrrChartWrap');
+            const empty = document.getElementById('hrrEmpty');
+
+            if (valid.length === 0) {
+                wrap.style.display = 'none';
+                empty.style.display = 'block';
+                if (hrrChartInstance) {
+                    hrrChartInstance.destroy();
+                    hrrChartInstance = null;
+                }
+                return;
+            }
+
+            wrap.style.display = 'block';
+            empty.style.display = 'none';
+
+            const labels = valid.map(r => r.date_fmt);
+            const vals = valid.map(r => r.hrr60);
+
+            const ctx = document.getElementById('hrrChart').getContext('2d');
+            if (hrrChartInstance) hrrChartInstance.destroy();
+            hrrChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [
+                        {
+                            label: '60s HR Drop (bpm)',
+                            showLine: false,
+                            data: vals,
+                            backgroundColor: 'rgba(225, 29, 72, 0.5)',
+                            borderColor: '#e11d48',
+                            pointRadius: 4,
+                            pointHoverRadius: 6
+                        },
+                        {
+                            label: '7-Activity Trend',
+                            data: computeMovingAvg(vals, 7),
+                            borderColor: '#e11d48',
+                            backgroundColor: 'transparent',
+                            borderWidth: 2.5,
+                            tension: 0.3,
+                            pointRadius: 0
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    normalized: true,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { labels: { color: '#334155', font: { weight: 600 } } },
+                        tooltip: {
+                            backgroundColor: '#0f172a',
+                            titleColor: '#f8fafc',
+                            bodyColor: '#e2e8f0',
+                            padding: 10,
+                            cornerRadius: 8,
+                            callbacks: {
+                                label: ctx => ` ${ctx.dataset.label}: ${Math.round(ctx.parsed.y)} bpm`,
+                                afterBody: items => {
+                                    const r = valid[items[0].dataIndex];
+                                    return [`Activity: ${r.name}`, `Avg HR: ${r.avg_hr} bpm`];
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            ticks: { color: '#64748b', autoSkip: true, maxTicksLimit: 20 },
+                            grid: { display: false }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            ticks: { color: '#64748b', callback: v => `${v} bpm` },
+                            grid: { color: '#f1f5f9' },
+                            title: { display: true, text: '60-Second Heart Rate Drop (bpm)', color: '#475569', font: { weight: 600 } }
                         }
                     }
                 }

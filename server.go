@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -342,8 +343,18 @@ type ProgressRunJSON struct {
 	Prior7DaysDistFmt  string  `json:"prior_7days_dist_fmt"`
 	Prior7DaysCount    int     `json:"prior_7days_count"`
 	PreRunFatiguePct   float64 `json:"pre_run_fatigue_pct"`
-	DecouplingPct      float64 `json:"decoupling_pct"`
-	HasDecoupling      bool    `json:"has_decoupling"`
+	DecouplingPct      float64         `json:"decoupling_pct"`
+	HasDecoupling      bool            `json:"has_decoupling"`
+	TempC              float64         `json:"temp_c,omitempty"`
+	HasTemp            bool            `json:"has_temp,omitempty"`
+	TempAdjustedEF     float64         `json:"temp_adjusted_ef,omitempty"`
+	MetersPerBeat      float64         `json:"meters_per_beat,omitempty"`
+	StrideLengthM      float64         `json:"stride_length_m,omitempty"`
+	FlatPaceByHR       map[int]float64 `json:"flat_pace_by_hr,omitempty"`
+	DurabilityPct      float64         `json:"durability_pct,omitempty"`
+	HasDurability      bool            `json:"has_durability,omitempty"`
+	HRR60              int             `json:"hrr60,omitempty"`
+	HasHRR60           bool            `json:"has_hrr60,omitempty"`
 }
 
 type ProgressSegmentEffortJSON struct {
@@ -401,12 +412,16 @@ type ProgressClusterJSON struct {
 }
 
 type ProgressResponse struct {
-	Sport    string                `json:"sport"`
-	Runs     []ProgressRunJSON     `json:"runs"`
-	Segments []ProgressSegmentJSON `json:"segments"`
-	Clusters []ProgressClusterJSON `json:"clusters"`
-	Unit     string                `json:"unit"`
-	Years    []int                 `json:"years,omitempty"`
+	Sport           string                `json:"sport"`
+	Runs            []ProgressRunJSON     `json:"runs"`
+	Segments        []ProgressSegmentJSON `json:"segments"`
+	Clusters        []ProgressClusterJSON `json:"clusters"`
+	Unit            string                `json:"unit"`
+	Years           []int                 `json:"years,omitempty"`
+	TrainingLoad    []TrainingLoadPoint   `json:"training_load,omitempty"`
+	TempModel       TempEFModel           `json:"temp_model"`
+	DefaultRefHR    int                   `json:"default_ref_hr,omitempty"`
+	AvailableRefHRs []int                 `json:"available_ref_hrs,omitempty"`
 }
 
 type DaemonStatusJSON struct {
@@ -627,6 +642,15 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 	store := GetGlobalStore(daemon.dir)
 	availableYears, _ := store.GetAvailableYears()
 
+	// Fit personal temperature-adjusted EF model across all years for this sport
+	var sportRuns []*RunStats
+	for _, run := range runs {
+		if sport == "all" || run.Sport == sport {
+			sportRuns = append(sportRuns, run)
+		}
+	}
+	tempAdjustedMap, tempModel := ComputeTempAdjustedEF(sportRuns)
+
 	formatRun := func(r *RunStats) ProgressRunJSON {
 		dist := r.Activity.Distance * distMult
 		elev := r.Activity.TotalElevationGain * elevMult
@@ -667,6 +691,21 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 			preRunFatiguePct = math.Round((r.PreRunFatigueFactor-1.0)*1000.0) / 10.0
 		}
 
+		var flatPaceByHR map[int]float64
+		if len(r.FlatSpeedByHR) > 0 {
+			flatPaceByHR = make(map[int]float64, len(r.FlatSpeedByHR))
+			for bin, spdMMin := range r.FlatSpeedByHR {
+				if spdMMin > 0 {
+					flatPaceByHR[bin] = math.Round((paceDist/spdMMin)*100) / 100
+				}
+			}
+		}
+
+		tempAdjEF := 0.0
+		if v, ok := tempAdjustedMap[r.Activity.ID]; ok {
+			tempAdjEF = math.Round(v*1000) / 1000
+		}
+
 		locTime := r.Activity.LocalStartTime()
 		return ProgressRunJSON{
 			ID:                r.Activity.ID,
@@ -692,6 +731,16 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 			PreRunFatiguePct:  preRunFatiguePct,
 			DecouplingPct:     math.Round(r.DecouplingPct*10) / 10,
 			HasDecoupling:     r.HasDecoupling,
+			TempC:             math.Round(r.TempC*10) / 10,
+			HasTemp:           r.HasTemp,
+			TempAdjustedEF:    tempAdjEF,
+			MetersPerBeat:     math.Round(r.MetersPerBeat*1000) / 1000,
+			StrideLengthM:     math.Round(r.StrideLengthM*100) / 100,
+			FlatPaceByHR:      flatPaceByHR,
+			DurabilityPct:     math.Round(r.DurabilityPct*10) / 10,
+			HasDurability:     r.HasDurability,
+			HRR60:             r.HRR60,
+			HasHRR60:          r.HasHRR60,
 		}
 	}
 
@@ -860,13 +909,49 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Determine available 5-bpm reference HR bins and pick the best default aerobic bin
+	hrBinCounts := make(map[int]int)
+	for _, r := range runsJSON {
+		for bin := range r.FlatPaceByHR {
+			if bin >= 115 && bin <= 185 {
+				hrBinCounts[bin]++
+			}
+		}
+	}
+	var availableRefHRs []int
+	defaultRefHR := 0
+	bestAeroCount := 0
+	bestOverallCount := 0
+	for bin, cnt := range hrBinCounts {
+		if cnt >= 3 {
+			availableRefHRs = append(availableRefHRs, bin)
+			if bin >= 135 && bin <= 160 && cnt > bestAeroCount {
+				bestAeroCount = cnt
+				defaultRefHR = bin
+			}
+			if cnt > bestOverallCount {
+				bestOverallCount = cnt
+				if bestAeroCount == 0 {
+					defaultRefHR = bin
+				}
+			}
+		}
+	}
+	sort.Ints(availableRefHRs)
+
+	trainingLoad := store.GetTrainingLoad(sport, year)
+
 	resp := ProgressResponse{
-		Sport:    sport,
-		Runs:     runsJSON,
-		Segments: segmentsJSON,
-		Clusters: clustersJSON,
-		Unit:     unit,
-		Years:    availableYears,
+		Sport:           sport,
+		Runs:            runsJSON,
+		Segments:        segmentsJSON,
+		Clusters:        clustersJSON,
+		Unit:            unit,
+		Years:           availableYears,
+		TrainingLoad:    trainingLoad,
+		TempModel:       tempModel,
+		DefaultRefHR:    defaultRefHR,
+		AvailableRefHRs: availableRefHRs,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

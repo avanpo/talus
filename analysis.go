@@ -358,6 +358,45 @@ type RunStats struct {
 	PreRunFatigueFactor float64
 	AdjustedEF          float64 // EF * PreRunFatigueFactor
 	AdjustedPaceMinKm   float64 // AvgPaceMinKm / PreRunFatigueFactor
+
+	// Economy & Mechanics
+	MetersPerBeat float64 // Raw distance (m) / total heartbeats
+	StrideLengthM float64 // Running stride length in meters (0 if unavailable)
+
+	// Flat speed (m/min) bucketed by 5-bpm heart rate bins (min 60s per bin)
+	FlatSpeedByHR map[int]float64
+
+	// Long-run durability (EF after 60+ min vs minutes 5–30)
+	EarlyEF       float64
+	LateEF        float64
+	DurabilityPct float64 // (LateEF / EarlyEF) * 100
+	HasDurability bool
+
+	// Heart Rate Recovery (max valid 60s drop in bpm from >= 135 bpm)
+	HRR60    int
+	HasHRR60 bool
+
+	// Ambient temperature recorded by device
+	TempC   float64
+	HasTemp bool
+}
+
+// TempEFModel summarizes the fitted EF-vs-Temperature relationship for heat normalization.
+type TempEFModel struct {
+	Enabled       bool    `json:"enabled"`
+	BaselineTempC float64 `json:"baseline_temp_c"`
+	SlopePer10C   float64 `json:"slope_per_10c"`     // EF delta per +10°C
+	PenaltyPct10C float64 `json:"penalty_pct_10c"`   // % EF change per +10°C (typically negative)
+	SampleCount   int     `json:"sample_count"`
+}
+
+// TrainingLoadPoint represents a single day on the CTL / ATL / TSB curve.
+type TrainingLoadPoint struct {
+	Date  string  `json:"date"` // YYYY-MM-DD
+	TRIMP float64 `json:"trimp"`
+	CTL   float64 `json:"ctl"` // 42-day Fitness
+	ATL   float64 `json:"atl"` // 7-day Fatigue
+	TSB   float64 `json:"tsb"` // Form = prevCTL - prevATL
 }
 
 // SegmentEffortStats represents calculated metrics for a single segment effort, including fatigue adjustments.
@@ -461,6 +500,32 @@ func calculateRunStats(act *ActivityDetail) *RunStats {
 	effSpeedMMin := effectiveDist / (float64(act.MovingTime) / 60.0)
 	stats.EF = effSpeedMMin / act.AverageHeartrate
 
+	// Economy & Mechanics: raw meters per heartbeat and running stride length
+	if act.AverageHeartrate > 0 && act.MovingTime > 0 {
+		totalBeats := act.AverageHeartrate * (float64(act.MovingTime) / 60.0)
+		if totalBeats > 0 {
+			stats.MetersPerBeat = act.Distance / totalBeats
+		}
+	}
+	if IsRunActivity(act) && act.AverageCadence > 0 && speedMMin > 0 {
+		totalSPM := act.AverageCadence
+		if totalSPM < 120 {
+			totalSPM *= 2.0 // Strava reports running cadence per foot
+		}
+		if totalSPM > 100 && totalSPM < 260 {
+			stride := speedMMin / totalSPM
+			if stride >= 0.4 && stride <= 2.5 {
+				stats.StrideLengthM = stride
+			}
+		}
+	}
+
+	// Ambient temperature (Garmin/device average_temp in °C; 0 is omitted/unrecorded in JSON)
+	if act.AverageTemp != 0 && act.AverageTemp >= -30 && act.AverageTemp <= 55 {
+		stats.TempC = act.AverageTemp
+		stats.HasTemp = true
+	}
+
 	// Decode and downsample polyline
 	if act.Map.Polyline != "" {
 		if coords, err := decodePolyline(act.Map.Polyline); err == nil {
@@ -538,11 +603,305 @@ func calculateRunStats(act *ActivityDetail) *RunStats {
 						}
 					}
 				}
+
+				// Optional altitude stream for flat-grade filtering and durability GAP
+				var alt []float64
+				if altStream, okAlt := act.Streams["altitude"]; okAlt && len(altStream.Data) == len(d) {
+					alt = getFloatSlice(altStream.Data)
+				}
+				isRun := IsRunActivity(act)
+				minSpeedMS, maxSpeedMS := 1.2, 7.5
+				if !isRun {
+					minSpeedMS, maxSpeedMS = 2.0, 22.0
+				}
+
+				// 1. Flat speed (m/min) bucketed by 5-bpm heart rate bins
+				type hrAccum struct {
+					dist float64
+					secs float64
+				}
+				bins := make(map[int]*hrAccum)
+				for i := 1; i < len(t); i++ {
+					dt := t[i] - t[i-1]
+					dd := d[i] - d[i-1]
+					if dt <= 0 || dt > 15 || dd <= 0 {
+						continue
+					}
+					spd := dd / dt
+					if spd < minSpeedMS || spd > maxSpeedMS {
+						continue
+					}
+					if hr[i] < 100 || hr[i] > 210 {
+						continue
+					}
+					// If altitude stream is present, keep only flat terrain (|grade| <= 2.5%)
+					if len(alt) == len(d) {
+						grade := (alt[i] - alt[i-1]) / dd
+						if math.Abs(grade) > 0.025 {
+							continue
+						}
+					}
+					bin := int(math.Round(hr[i]/5.0)) * 5
+					acc := bins[bin]
+					if acc == nil {
+						acc = &hrAccum{}
+						bins[bin] = acc
+					}
+					acc.dist += dd
+					acc.secs += dt
+				}
+				for bin, acc := range bins {
+					if acc.secs >= 60.0 && acc.dist > 0 {
+						if stats.FlatSpeedByHR == nil {
+							stats.FlatSpeedByHR = make(map[int]float64)
+						}
+						stats.FlatSpeedByHR[bin] = acc.dist / (acc.secs / 60.0)
+					}
+				}
+
+				// 2. Long-run durability: compare EF in minutes 5–30 vs after 60+ minutes
+				totalElapsed := t[len(t)-1] - t[0]
+				if totalElapsed >= 4200 { // >= 70 minutes elapsed
+					var earlyDist, earlySecs, earlyHRSum, earlyElev float64
+					var lateDist, lateSecs, lateHRSum, lateElev float64
+					t0 := t[0]
+					for i := 1; i < len(t); i++ {
+						dt := t[i] - t[i-1]
+						dd := d[i] - d[i-1]
+						if dt <= 0 || dt > 15 || dd < 0 || hr[i] < 60 || hr[i] > 230 {
+							continue
+						}
+						relT := t[i] - t0
+						var elevDelta float64
+						if len(alt) == len(d) && isRun {
+							if diff := alt[i] - alt[i-1]; diff > 0 {
+								elevDelta = diff
+							}
+						}
+						if relT >= 300 && relT <= 1800 {
+							earlyDist += dd
+							earlySecs += dt
+							earlyHRSum += hr[i] * dt
+							earlyElev += elevDelta
+						} else if relT >= 3600 {
+							lateDist += dd
+							lateSecs += dt
+							lateHRSum += hr[i] * dt
+							lateElev += elevDelta
+						}
+					}
+					if earlySecs >= 600 && lateSecs >= 600 && earlyHRSum > 0 && lateHRSum > 0 {
+						earlyHR := earlyHRSum / earlySecs
+						lateHR := lateHRSum / lateSecs
+						earlyEffDist := earlyDist + 7.5*earlyElev
+						lateEffDist := lateDist + 7.5*lateElev
+						earlyEF := (earlyEffDist / (earlySecs / 60.0)) / earlyHR
+						lateEF := (lateEffDist / (lateSecs / 60.0)) / lateHR
+						if earlyEF > 0 && lateEF > 0 {
+							ratio := (lateEF / earlyEF) * 100.0
+							if ratio >= 60.0 && ratio <= 120.0 {
+								stats.EarlyEF = earlyEF
+								stats.LateEF = lateEF
+								stats.DurabilityPct = ratio
+								stats.HasDurability = true
+							}
+						}
+					}
+				}
+
+				// 3. Heart Rate Recovery (HRR60): max valid 60s HR drop from sustained effort >= 135 bpm
+				maxDrop := 0
+				j := 0
+				for i := 0; i < len(t); i++ {
+					if hr[i] < 135 || hr[i] > 225 {
+						continue
+					}
+					// Verify sustained effort (avoid 1s optical HR spikes): 20s prior avg within 12 bpm
+					priorSum, priorCnt := 0.0, 0
+					for k := i - 1; k >= 0 && t[i]-t[k] <= 20; k-- {
+						priorSum += hr[k]
+						priorCnt++
+					}
+					if priorCnt < 3 || math.Abs(hr[i]-(priorSum/float64(priorCnt))) > 12 {
+						continue
+					}
+					if j < i {
+						j = i
+					}
+					for j < len(t) && t[j]-t[i] < 58 {
+						j++
+					}
+					if j >= len(t) {
+						break
+					}
+					if t[j]-t[i] <= 68 && hr[j] >= 50 && hr[j] < hr[i] {
+						drop := int(math.Round(hr[i] - hr[j]))
+						if drop >= 10 && drop <= 75 && drop > maxDrop {
+							maxDrop = drop
+						}
+					}
+				}
+				if maxDrop >= 10 {
+					stats.HRR60 = maxDrop
+					stats.HasHRR60 = true
+				}
 			}
 		}
 	}
 
 	return stats
+}
+
+// ComputeTempAdjustedEF fits an OLS linear regression of EF vs TempC across runs with temperature data
+// and returns a map of activity ID -> heat-normalized EF (normalized to 15°C) plus model metadata.
+func ComputeTempAdjustedEF(runs []*RunStats) (map[int64]float64, TempEFModel) {
+	const baselineC = 15.0
+	model := TempEFModel{BaselineTempC: baselineC}
+	adjusted := make(map[int64]float64)
+
+	var xs, ys []float64
+	minT, maxT := math.MaxFloat64, -math.MaxFloat64
+	for _, r := range runs {
+		if r == nil || r.Activity == nil || !r.HasTemp || r.EF <= 0 {
+			continue
+		}
+		xs = append(xs, r.TempC)
+		ys = append(ys, r.EF)
+		if r.TempC < minT {
+			minT = r.TempC
+		}
+		if r.TempC > maxT {
+			maxT = r.TempC
+		}
+	}
+
+	n := len(xs)
+	model.SampleCount = n
+	if n < 15 || (maxT-minT) < 8.0 {
+		return adjusted, model
+	}
+
+	var sumX, sumY float64
+	for i := 0; i < n; i++ {
+		sumX += xs[i]
+		sumY += ys[i]
+	}
+	meanX := sumX / float64(n)
+	meanY := sumY / float64(n)
+
+	var num, den float64
+	for i := 0; i < n; i++ {
+		dx := xs[i] - meanX
+		num += dx * (ys[i] - meanY)
+		den += dx * dx
+	}
+	if den <= 0 || meanY <= 0 {
+		return adjusted, model
+	}
+
+	slope := num / den
+	// Clamp slope to physiologically plausible heat penalty (<= 0, >= -0.05 EF per °C)
+	if slope > 0 {
+		slope = 0
+	}
+	if slope < -0.05 {
+		slope = -0.05
+	}
+
+	model.Enabled = true
+	model.SlopePer10C = math.Round(slope*10.0*10000.0) / 10000.0
+	model.PenaltyPct10C = math.Round(((slope*10.0)/meanY)*1000.0) / 10.0
+
+	for _, r := range runs {
+		if r == nil || r.Activity == nil || !r.HasTemp || r.EF <= 0 {
+			continue
+		}
+		normEF := r.EF - slope*(r.TempC-baselineC)
+		if normEF > 0 {
+			adjusted[r.Activity.ID] = normEF
+		}
+	}
+
+	return adjusted, model
+}
+
+// ComputeTrainingLoadSeries computes a daily Banister HR TRIMP + CTL (42d) / ATL (7d) / TSB time series.
+// dailyTRIMP maps "YYYY-MM-DD" to total TRIMP for that day. If year > 0, only dates in that year are returned,
+// while EWMA state is still carried over from the beginning of history.
+func ComputeTrainingLoadSeries(dailyTRIMP map[string]float64, year int) []TrainingLoadPoint {
+	if len(dailyTRIMP) == 0 {
+		return nil
+	}
+
+	dates := make([]string, 0, len(dailyTRIMP))
+	for d := range dailyTRIMP {
+		dates = append(dates, d)
+	}
+	sort.Strings(dates)
+
+	startDate, err1 := time.Parse("2006-01-02", dates[0])
+	endDate, err2 := time.Parse("2006-01-02", dates[len(dates)-1])
+	if err1 != nil || err2 != nil || endDate.Before(startDate) {
+		return nil
+	}
+
+	var out []TrainingLoadPoint
+	ctl, atl := 0.0, 0.0
+	for cur := startDate; !cur.After(endDate); cur = cur.AddDate(0, 0, 1) {
+		key := cur.Format("2006-01-02")
+		trimp := dailyTRIMP[key]
+		tsb := ctl - atl
+		ctl += (trimp - ctl) / 42.0
+		atl += (trimp - atl) / 7.0
+
+		if year == 0 || cur.Year() == year {
+			out = append(out, TrainingLoadPoint{
+				Date:  key,
+				TRIMP: math.Round(trimp*10) / 10,
+				CTL:   math.Round(ctl*10) / 10,
+				ATL:   math.Round(atl*10) / 10,
+				TSB:   math.Round(tsb*10) / 10,
+			})
+		}
+	}
+	return out
+}
+
+// computeActivityTRIMP computes Banister HR TRIMP for a single activity using stream BPM seconds if available.
+func computeActivityTRIMP(act *ActivityDetail, hrSummary *ActivityHRSummary, hrMax float64) float64 {
+	const hrRest = 55.0
+	if hrMax <= hrRest+20 {
+		hrMax = 190.0
+	}
+	denom := hrMax - hrRest
+
+	if hrSummary != nil && len(hrSummary.BPMSeconds) > 0 {
+		total := 0.0
+		for bpm, secs := range hrSummary.BPMSeconds {
+			if secs <= 0 || bpm <= int(hrRest) {
+				continue
+			}
+			hrr := (float64(bpm) - hrRest) / denom
+			if hrr < 0 {
+				hrr = 0
+			} else if hrr > 1.05 {
+				hrr = 1.05
+			}
+			total += (float64(secs) / 60.0) * hrr * 0.64 * math.Exp(1.92*hrr)
+		}
+		return total
+	}
+
+	if act != nil && act.AverageHeartrate > hrRest && act.MovingTime > 0 {
+		hrr := (act.AverageHeartrate - hrRest) / denom
+		if hrr < 0 {
+			hrr = 0
+		} else if hrr > 1.05 {
+			hrr = 1.05
+		}
+		return (float64(act.MovingTime) / 60.0) * hrr * 0.64 * math.Exp(1.92*hrr)
+	}
+	return 0
 }
 
 func decodePolyline(encoded string) ([][2]float64, error) {

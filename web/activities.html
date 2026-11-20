@@ -748,6 +748,82 @@
             font-size: 0.85rem;
             margin-top: auto;
         }
+
+        @media (max-width: 768px) {
+            .header-inner {
+                height: auto;
+                flex-wrap: wrap;
+                padding: 0.65rem 1rem;
+                gap: 0.5rem 0.75rem;
+            }
+            nav {
+                order: 3;
+                width: 100%;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+                padding-bottom: 0.15rem;
+            }
+            nav::-webkit-scrollbar { display: none; }
+            .nav-link {
+                white-space: nowrap;
+                flex-shrink: 0;
+                font-size: 0.84rem;
+                padding: 0.35rem 0.65rem;
+            }
+            .status-pill {
+                font-size: 0.75rem;
+                padding: 0.3rem 0.6rem;
+            }
+            .btn-sync {
+                font-size: 0.78rem;
+                padding: 0.38rem 0.75rem;
+            }
+            main {
+                padding: 1rem;
+            }
+            .controls-card {
+                padding: 0.9rem 1rem;
+                gap: 0.75rem;
+            }
+            .controls-group {
+                width: 100%;
+                gap: 0.5rem;
+            }
+            .search-group {
+                min-width: 0;
+                width: 100%;
+            }
+            .search-wrapper {
+                max-width: 100%;
+            }
+            .select-input {
+                max-width: 100%;
+                flex: 1 1 auto;
+            }
+            .table-responsive {
+                -webkit-overflow-scrolling: touch;
+            }
+            .detail-hero-card {
+                padding: 1rem;
+            }
+            .detail-title {
+                font-size: 1.35rem;
+            }
+            .metric-grid {
+                grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+                gap: 0.75rem;
+            }
+            .metric-card {
+                padding: 0.9rem 1rem;
+            }
+            .chart-card {
+                padding: 1rem;
+            }
+            .chart-container {
+                height: 250px;
+            }
+        }
     </style>
 </head>
 <body>

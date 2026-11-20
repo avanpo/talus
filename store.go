@@ -721,3 +721,47 @@ func (s *ActivityStore) GetHRZoneData(sport string, year int) ([]int, []*Activit
 
 	return yearsCopy, summaries, histogram
 }
+
+// GetTrainingLoad computes the daily HR TRIMP + CTL (42d) / ATL (7d) / TSB time series
+// filtered by sport ("all", "running", "cycling", "skiing") and year (0 for all years).
+func (s *ActivityStore) GetTrainingLoad(sport string, year int) []TrainingLoadPoint {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var hrSummaries []*ActivityHRSummary
+	for _, item := range s.cacheMap {
+		if item.activity == nil {
+			continue
+		}
+		if sport != "all" && GetSportCategory(item.activity) != sport {
+			continue
+		}
+		if item.hrSummary != nil {
+			hrSummaries = append(hrSummaries, item.hrSummary)
+		}
+	}
+
+	_, meta := EstimateHRZones(hrSummaries)
+	hrMax := float64(meta.EstimatedHRMax)
+	if hrMax <= 0 {
+		hrMax = 190.0
+	}
+
+	dailyTRIMP := make(map[string]float64)
+	for _, item := range s.cacheMap {
+		if item.activity == nil {
+			continue
+		}
+		if sport != "all" && GetSportCategory(item.activity) != sport {
+			continue
+		}
+		trimp := computeActivityTRIMP(item.activity, item.hrSummary, hrMax)
+		if trimp <= 0 {
+			continue
+		}
+		dayKey := item.activity.LocalStartTime().Format("2006-01-02")
+		dailyTRIMP[dayKey] += trimp
+	}
+
+	return ComputeTrainingLoadSeries(dailyTRIMP, year)
+}
