@@ -412,16 +412,18 @@ type ProgressClusterJSON struct {
 }
 
 type ProgressResponse struct {
-	Sport           string                `json:"sport"`
-	Runs            []ProgressRunJSON     `json:"runs"`
-	Segments        []ProgressSegmentJSON `json:"segments"`
-	Clusters        []ProgressClusterJSON `json:"clusters"`
-	Unit            string                `json:"unit"`
-	Years           []int                 `json:"years,omitempty"`
-	TrainingLoad    []TrainingLoadPoint   `json:"training_load,omitempty"`
-	TempModel       TempEFModel           `json:"temp_model"`
-	DefaultRefHR    int                   `json:"default_ref_hr,omitempty"`
-	AvailableRefHRs []int                 `json:"available_ref_hrs,omitempty"`
+	Sport           string                   `json:"sport"`
+	Runs            []ProgressRunJSON        `json:"runs"`
+	Segments        []ProgressSegmentJSON    `json:"segments"`
+	Clusters        []ProgressClusterJSON    `json:"clusters"`
+	Unit            string                   `json:"unit"`
+	Years           []int                    `json:"years,omitempty"`
+	TrainingLoad    []TrainingLoadPoint      `json:"training_load,omitempty"`
+	YoYCTL          map[int][]YoYCTLPoint    `json:"yoy_ctl,omitempty"`
+	Bests           []BestRecordJSON         `json:"bests,omitempty"`
+	TempModel       TempEFModel              `json:"temp_model"`
+	DefaultRefHR    int                      `json:"default_ref_hr,omitempty"`
+	AvailableRefHRs []int                    `json:"available_ref_hrs,omitempty"`
 }
 
 type DaemonStatusJSON struct {
@@ -874,6 +876,16 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	sort.Slice(segmentsJSON, func(i, j int) bool {
+		if segmentsJSON[i].EffortCount != segmentsJSON[j].EffortCount {
+			return segmentsJSON[i].EffortCount > segmentsJSON[j].EffortCount
+		}
+		return segmentsJSON[i].Name < segmentsJSON[j].Name
+	})
+	if len(segmentsJSON) > 50 {
+		segmentsJSON = segmentsJSON[:50]
+	}
+
 	var clustersJSON []ProgressClusterJSON
 	for _, cluster := range clusters {
 		if sport != "all" && cluster.Sport != sport {
@@ -939,7 +951,20 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Ints(availableRefHRs)
 
-	trainingLoad := store.GetTrainingLoad(sport, year)
+	// Sync saved Zone 5 max HR into Training Load calculation when available
+	hrMaxOverride := 0.0
+	cfgDir := daemon.configDir
+	if cfgDir == "" {
+		cfgDir = daemon.dir
+	}
+	if cfg, err := LoadHRZonesWithFallback(cfgDir, daemon.dataDir); err == nil && cfg != nil {
+		if z, ok := cfg.ZonesBySport[sport]; ok && len(z) == 5 && z[4].Max > 100 {
+			hrMaxOverride = float64(z[4].Max)
+		}
+	}
+
+	trainingLoad, yoyCTL := store.GetTrainingLoad(sport, year, hrMaxOverride)
+	bests := store.GetRunningBests(year, unit)
 
 	resp := ProgressResponse{
 		Sport:           sport,
@@ -949,6 +974,8 @@ func handleProgressAPI(w http.ResponseWriter, r *http.Request) {
 		Unit:            unit,
 		Years:           availableYears,
 		TrainingLoad:    trainingLoad,
+		YoYCTL:          yoyCTL,
+		Bests:           bests,
 		TempModel:       tempModel,
 		DefaultRefHR:    defaultRefHR,
 		AvailableRefHRs: availableRefHRs,
@@ -1111,6 +1138,71 @@ func handleOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+func serveStaticAsset(w http.ResponseWriter, relPath, contentType string) {
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	if data, err := os.ReadFile(relPath); err == nil {
+		_, _ = w.Write(data)
+		return
+	}
+	f, err := webFS.Open(relPath)
+	if err != nil {
+		http.Error(w, relPath+" not found", http.StatusNotFound)
+		return
+	}
+	defer f.Close()
+	_, _ = io.Copy(w, f)
+}
+
+func handleYoYVolumeAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	unit := r.URL.Query().Get("unit")
+	if unit == "" {
+		unit = getSystemUnit()
+	}
+	sport := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("sport")))
+	if sport == "" {
+		sport = "all"
+	}
+
+	store := GetGlobalStore(daemon.dataDir)
+	if err := store.ReloadIfNeeded(); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to load activities: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	resp := store.GetYoYVolume(sport, unit)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func handleShoesAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	unit := r.URL.Query().Get("unit")
+	if unit == "" {
+		unit = getSystemUnit()
+	}
+
+	store := GetGlobalStore(daemon.dataDir)
+	if err := store.ReloadIfNeeded(); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to load activities: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	shoes := store.GetShoeStats(unit)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"unit":  unit,
+		"shoes": shoes,
+	})
+}
+
 func serveHTMLFile(w http.ResponseWriter, relPath string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -1174,15 +1266,16 @@ func handleHRZonesPage(w http.ResponseWriter, r *http.Request) {
 }
 
 type HRZonesResponseJSON struct {
-	Sport          string                 `json:"sport"`
-	Year           int                    `json:"year"`
-	Years          []int                  `json:"years"`
-	EstimatedZones []HRZone               `json:"estimated_zones"`
-	SavedZones     []HRZone               `json:"saved_zones,omitempty"`
-	HasSavedZones  bool                   `json:"has_saved_zones"`
-	EstimationMeta HRZoneEstimationMeta   `json:"estimation_meta"`
-	BPMHistogram   map[int]int            `json:"bpm_histogram"`
-	Distribution   []ZoneDistributionItem `json:"distribution"`
+	Sport                string                    `json:"sport"`
+	Year                 int                       `json:"year"`
+	Years                []int                     `json:"years"`
+	EstimatedZones       []HRZone                  `json:"estimated_zones"`
+	SavedZones           []HRZone                  `json:"saved_zones,omitempty"`
+	HasSavedZones        bool                      `json:"has_saved_zones"`
+	EstimationMeta       HRZoneEstimationMeta      `json:"estimation_meta"`
+	BPMHistogram         map[int]int               `json:"bpm_histogram"`
+	MonthlyBPMHistograms map[string]map[int]int    `json:"monthly_bpm_histograms,omitempty"`
+	Distribution         []ZoneDistributionItem    `json:"distribution"`
 }
 
 type SaveHRZonesRequestJSON struct {
@@ -1253,7 +1346,7 @@ func handleHRZonesAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	years, summaries, histogram := store.GetHRZoneData(sport, year)
+	years, summaries, histogram, monthlyHistograms := store.GetHRZoneData(sport, year)
 	estimatedZones, meta := EstimateHRZones(summaries)
 
 	cfgDir := daemon.configDir
@@ -1276,15 +1369,16 @@ func handleHRZonesAPI(w http.ResponseWriter, r *http.Request) {
 	distribution := ComputeZoneDistribution(histogram, activeZones)
 
 	resp := HRZonesResponseJSON{
-		Sport:          sport,
-		Year:           year,
-		Years:          years,
-		EstimatedZones: estimatedZones,
-		SavedZones:     savedZones,
-		HasSavedZones:  hasSaved,
-		EstimationMeta: meta,
-		BPMHistogram:   histogram,
-		Distribution:   distribution,
+		Sport:                sport,
+		Year:                 year,
+		Years:                years,
+		EstimatedZones:       estimatedZones,
+		SavedZones:           savedZones,
+		HasSavedZones:        hasSaved,
+		EstimationMeta:       meta,
+		BPMHistogram:         histogram,
+		MonthlyBPMHistograms: monthlyHistograms,
+		Distribution:         distribution,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1483,6 +1577,12 @@ func StartWebServerWithDirs(dataDir, configDir, metadataDir string, port int, sy
 	defer daemon.Stop()
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/common.css", func(w http.ResponseWriter, r *http.Request) {
+		serveStaticAsset(w, "web/common.css", "text/css; charset=utf-8")
+	})
+	mux.HandleFunc("/common.js", func(w http.ResponseWriter, r *http.Request) {
+		serveStaticAsset(w, "web/common.js", "application/javascript; charset=utf-8")
+	})
 	mux.HandleFunc("/setup", handleSetupPage)
 	mux.HandleFunc("/setup/auth", handleSetupAuth)
 	mux.HandleFunc("/callback", handleOAuthCallback)
@@ -1492,6 +1592,8 @@ func StartWebServerWithDirs(dataDir, configDir, metadataDir string, port int, sy
 	mux.HandleFunc("/progress", handleProgressPage)
 	mux.HandleFunc("/hr-zones", handleHRZonesPage)
 	mux.HandleFunc("/api/stats", handleStatsAPI)
+	mux.HandleFunc("/api/yoy", handleYoYVolumeAPI)
+	mux.HandleFunc("/api/shoes", handleShoesAPI)
 	mux.HandleFunc("/api/progress", handleProgressAPI)
 	mux.HandleFunc("/api/hr-zones", handleHRZonesAPI)
 	mux.HandleFunc("/api/activities", handleActivitiesAPI)

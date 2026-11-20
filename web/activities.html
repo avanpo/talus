@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Activities - talus</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛰️</text></svg>">
+    <link rel="stylesheet" href="/common.css">
+    <script src="/common.js"></script>
     <!-- Leaflet for interactive activity GPS maps -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
@@ -739,6 +741,87 @@
             to { transform: rotate(360deg); }
         }
 
+        .shoe-details {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            box-shadow: var(--shadow);
+            padding: 0.9rem 1.25rem;
+            margin-bottom: 1.5rem;
+        }
+        .shoe-details summary {
+            cursor: pointer;
+            font-weight: 700;
+            font-size: 0.95rem;
+            color: var(--text-main);
+            list-style: none;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .shoe-details summary::-webkit-details-marker { display: none; }
+        .shoe-details summary::after {
+            content: 'Show shoes ▾';
+            font-size: 0.8rem;
+            color: var(--primary);
+            font-weight: 600;
+        }
+        .shoe-details[open] summary::after {
+            content: 'Hide shoes ▴';
+        }
+        .shoe-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+            gap: 0.85rem;
+            margin-top: 1rem;
+        }
+        .shoe-item {
+            background: var(--bg-subtle);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.85rem 1rem;
+        }
+        .shoe-item-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            gap: 0.5rem;
+            margin-bottom: 0.4rem;
+        }
+        .shoe-name {
+            font-weight: 700;
+            font-size: 0.9rem;
+            color: var(--text-main);
+        }
+        .shoe-dist {
+            font-weight: 700;
+            font-size: 0.88rem;
+            color: var(--primary);
+            white-space: nowrap;
+        }
+        .shoe-bar-track {
+            height: 6px;
+            background: #e2e8f0;
+            border-radius: 9999px;
+            overflow: hidden;
+            margin-bottom: 0.45rem;
+        }
+        .shoe-bar-fill {
+            height: 100%;
+            border-radius: 9999px;
+            background: var(--primary);
+        }
+        .shoe-bar-fill.warn { background: var(--amber); }
+        .shoe-bar-fill.high { background: var(--rose); }
+        .shoe-meta {
+            font-size: 0.76rem;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: space-between;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
         footer {
             background-color: var(--bg-card);
             border-top: 1px solid var(--border);
@@ -836,7 +919,7 @@
             <nav>
                 <a href="/" class="nav-link">Volume</a>
                 <a href="/activities" class="nav-link active">Activities</a>
-                <a href="/progress" class="nav-link">Fitness & Progress</a>
+                <a href="/progress" class="nav-link">Run Fitness</a>
                 <a href="/hr-zones" class="nav-link">HR Zones</a>
             </nav>
             <div class="header-actions">
@@ -901,6 +984,13 @@
                     </select>
                 </div>
             </div>
+
+            <details class="shoe-details" id="shoeDetailsCard" style="display: none;">
+                <summary>
+                    <span>Shoe Rotation &amp; Mileage <span class="badge badge-gray" id="shoeCountBadge" style="margin-left:0.4rem;">0</span></span>
+                </summary>
+                <div class="shoe-grid" id="shoeGrid"></div>
+            </details>
 
             <div class="table-card">
                 <div class="table-card-header">
@@ -1788,6 +1878,50 @@
             }
         });
 
+        async function loadShoes() {
+            try {
+                const res = await fetch('/api/shoes');
+                if (!res.ok) return;
+                const data = await res.json();
+                const shoes = data.shoes || [];
+                const unit = data.unit || 'km';
+                const maxLife = unit === 'mi' ? 400 : 650;
+                const card = document.getElementById('shoeDetailsCard');
+                const grid = document.getElementById('shoeGrid');
+                const badge = document.getElementById('shoeCountBadge');
+
+                if (shoes.length === 0) {
+                    card.style.display = 'none';
+                    return;
+                }
+                card.style.display = 'block';
+                badge.textContent = `${shoes.length} pairs`;
+
+                grid.innerHTML = shoes.map(s => {
+                    const pct = Math.min(100, Math.round((s.total_distance / maxLife) * 100));
+                    const barClass = pct >= 95 ? 'high' : (pct >= 75 ? 'warn' : '');
+                    const surfaceParts = [];
+                    if (s.road_distance > 0) surfaceParts.push(`Road: ${s.road_distance} ${unit}`);
+                    if (s.trail_distance > 0) surfaceParts.push(`Trail: ${s.trail_distance} ${unit}`);
+                    return `<div class="shoe-item">
+                        <div class="shoe-item-head">
+                            <span class="shoe-name">${escapeHtml(s.name)}</span>
+                            <span class="shoe-dist">${s.total_distance} ${unit}</span>
+                        </div>
+                        <div class="shoe-bar-track" title="${pct}% of ${maxLife} ${unit} guideline">
+                            <div class="shoe-bar-fill ${barClass}" style="width: ${pct}%;"></div>
+                        </div>
+                        <div class="shoe-meta">
+                            <span>${s.activity_count} runs${surfaceParts.length ? ' • ' + surfaceParts.join(' / ') : ''}</span>
+                            <span>Last: ${s.last_used_fmt}</span>
+                        </div>
+                    </div>`;
+                }).join('');
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
         // Initialize: check if an activity ID is in the query string
         const initialParams = new URLSearchParams(window.location.search);
         const initialActId = initialParams.get('id');
@@ -1796,6 +1930,7 @@
         } else {
             loadActivities();
         }
+        loadShoes();
 
         updateStatus();
         setInterval(updateStatus, 15000);

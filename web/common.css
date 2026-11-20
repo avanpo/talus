@@ -1,0 +1,31 @@
+/* Shared design tokens, header, navigation, and mobile utilities for Talus */
+:root {
+    --bg-body: #f8fafc;
+    --bg-card: #ffffff;
+    --bg-subtle: #f1f5f9;
+    --border: #e2e8f0;
+    --border-light: #cbd5e1;
+    --text-main: #0f172a;
+    --text-muted: #64748b;
+    --text-dim: #94a3b8;
+    --primary: #2563eb;
+    --primary-hover: #1d4ed8;
+    --emerald: #16a34a;
+    --amber: #d97706;
+    --rose: #e11d48;
+    --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.08), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
+}
+
+.table-responsive {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+.clickable-row {
+    cursor: pointer;
+    transition: background-color 0.12s ease;
+}
+.clickable-row:hover {
+    background-color: #f8fafc;
+}

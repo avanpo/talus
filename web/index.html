@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Volume - talus</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛰️</text></svg>">
+    <link rel="stylesheet" href="/common.css">
+    <script src="/common.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <style>
         :root {
@@ -368,7 +370,7 @@
             <nav>
                 <a href="/" class="nav-link active">Volume</a>
                 <a href="/activities" class="nav-link">Activities</a>
-                <a href="/progress" class="nav-link">Fitness & Progress</a>
+                <a href="/progress" class="nav-link">Run Fitness</a>
                 <a href="/hr-zones" class="nav-link">HR Zones</a>
             </nav>
             <div class="header-actions">
@@ -441,6 +443,19 @@
             </div>
         </div>
 
+        <div class="chart-card" id="yoyCard">
+            <div class="chart-header">
+                <h3 class="chart-title" id="yoyChartTitle">Year-over-Year Cumulative Distance</h3>
+                <div class="btn-group">
+                    <button class="btn-toggle active" id="yoyDistBtn" onclick="setYoYMetric('distance')">Distance</button>
+                    <button class="btn-toggle" id="yoyElevBtn" onclick="setYoYMetric('elevation')">Elevation</button>
+                </div>
+            </div>
+            <div class="chart-container">
+                <canvas id="yoyVolumeChart"></canvas>
+            </div>
+        </div>
+
         <!-- Total Stats KPI Grid -->
         <div class="kpi-grid">
             <div class="kpi-card">
@@ -469,6 +484,9 @@
         let distChartInstance = null;
         let elevChartInstance = null;
         let timeChartInstance = null;
+        let yoyVolumeChartInstance = null;
+        let yoyMetric = 'distance';
+        let yoyData = null;
         let initialYearsLoaded = false;
 
         // Outrun / Vaporwave palette (ordered by volume/rank in each graph: 1st gets #0, 2nd gets #1, etc.)
@@ -545,6 +563,7 @@
                 const res = await fetch(`/api/stats?period=${currentPeriod}&sport=${sport}&year=${year}`);
                 if (!res.ok) throw new Error('API error');
                 const data = await res.json();
+                loadYoYVolume(sport);
 
                 const distUnit = data.unit || 'km';
                 const elevUnit = distUnit === 'mi' ? 'ft' : 'm';
@@ -788,6 +807,117 @@
                     }
                 }
             };
+        }
+
+        function setYoYMetric(metric) {
+            yoyMetric = metric;
+            document.getElementById('yoyDistBtn').classList.toggle('active', metric === 'distance');
+            document.getElementById('yoyElevBtn').classList.toggle('active', metric === 'elevation');
+            renderYoYVolumeChart();
+        }
+
+        async function loadYoYVolume(sport) {
+            try {
+                const res = await fetch(`/api/yoy?sport=${encodeURIComponent(sport)}`);
+                if (!res.ok) return;
+                yoyData = await res.json();
+                renderYoYVolumeChart();
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        function renderYoYVolumeChart() {
+            const card = document.getElementById('yoyCard');
+            if (!yoyData || !yoyData.years || yoyData.years.length === 0) {
+                card.style.display = 'none';
+                return;
+            }
+            card.style.display = 'block';
+
+            const distUnit = yoyData.unit || 'km';
+            const elevUnit = distUnit === 'mi' ? 'ft' : 'm';
+            const isDist = yoyMetric === 'distance';
+            const unitLabel = isDist ? distUnit : elevUnit;
+            document.getElementById('yoyChartTitle').textContent = isDist
+                ? `Year-over-Year Cumulative Distance (${distUnit})`
+                : `Year-over-Year Cumulative Elevation (${elevUnit})`;
+
+            const palette = ['#94a3b8', '#64748b', '#0ea5e9', '#16a34a', '#d97706', '#2563eb'];
+            const selectedYear = parseInt(document.getElementById('yearSelect').value, 10);
+            const years = yoyData.years;
+
+            const datasets = years.map((yr, idx) => {
+                const pts = (yoyData.series && yoyData.series[yr]) || [];
+                const isLatest = idx === years.length - 1;
+                const isSelected = !isNaN(selectedYear) && selectedYear > 0 && yr === selectedYear;
+                const color = isSelected ? '#2563eb' : palette[Math.min(palette.length - 1, palette.length - years.length + idx)];
+                return {
+                    label: String(yr),
+                    data: pts.map(p => ({ x: p.day, y: isDist ? p.distance : p.elevation })),
+                    borderColor: color,
+                    backgroundColor: 'transparent',
+                    borderWidth: (isSelected || (isLatest && (!selectedYear || selectedYear === 0))) ? 2.8 : 1.7,
+                    pointRadius: 0,
+                    tension: 0.2
+                };
+            });
+
+            const monthStarts = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335];
+            const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+            const ctx = document.getElementById('yoyVolumeChart').getContext('2d');
+            if (yoyVolumeChartInstance) yoyVolumeChartInstance.destroy();
+            yoyVolumeChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: { datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    interaction: { mode: 'nearest', axis: 'x', intersect: false },
+                    plugins: {
+                        legend: { labels: { color: '#334155', font: { weight: 600 } } },
+                        tooltip: {
+                            backgroundColor: '#0f172a',
+                            titleColor: '#f8fafc',
+                            bodyColor: '#e2e8f0',
+                            padding: 10,
+                            cornerRadius: 6,
+                            callbacks: {
+                                title: items => {
+                                    const doy = Math.round(items[0].parsed.x);
+                                    const refDate = new Date(2024, 0, doy);
+                                    return refDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                                },
+                                label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toLocaleString()} ${unitLabel}`
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            min: 1,
+                            max: 366,
+                            ticks: {
+                                color: '#64748b',
+                                stepSize: 30,
+                                callback: val => {
+                                    const idx = monthStarts.findIndex(m => Math.abs(m - val) <= 15);
+                                    return idx >= 0 ? monthNames[idx] : '';
+                                }
+                            },
+                            grid: { display: false }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            ticks: { color: '#64748b' },
+                            grid: { color: '#f1f5f9' },
+                            title: { display: true, text: isDist ? `Cumulative Distance (${distUnit})` : `Cumulative Elevation (${elevUnit})`, color: '#475569', font: { weight: 600 } }
+                        }
+                    }
+                }
+            });
         }
 
         setInterval(updateStatus, 15000);

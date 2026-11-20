@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>HR Zones - talus</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛰️</text></svg>">
+    <link rel="stylesheet" href="/common.css">
+    <script src="/common.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <style>
         :root {
@@ -626,7 +628,7 @@
             <nav>
                 <a href="/" class="nav-link">Volume</a>
                 <a href="/activities" class="nav-link">Activities</a>
-                <a href="/progress" class="nav-link">Fitness & Progress</a>
+                <a href="/progress" class="nav-link">Run Fitness</a>
                 <a href="/hr-zones" class="nav-link active">HR Zones</a>
             </nav>
             <div class="header-actions">
@@ -727,6 +729,21 @@
                 No heart rate data found for the selected activity type and year.
             </div>
         </div>
+
+        <div class="card">
+            <div class="card-header">
+                <div>
+                    <h3 class="card-title">Monthly Zone Polarization Trend</h3>
+                    <div class="card-desc">Percentage of monthly heart rate time spent in each zone (Z1&ndash;Z5). Updates live when you edit or switch zone models.</div>
+                </div>
+            </div>
+            <div id="monthlyZoneWrapper" class="chart-container">
+                <canvas id="monthlyZoneChart"></canvas>
+            </div>
+            <div id="monthlyZoneEmpty" class="empty-state" style="display: none;">
+                No monthly heart rate telemetry available for the selected filter.
+            </div>
+        </div>
     </main>
 
     <footer>
@@ -750,7 +767,9 @@
         let zoneSourceMode = null; // 'saved' | 'estimated'
         let activeZones = [];
         let bpmHistogram = {};
+        let monthlyBPMHistograms = {};
         let bpmChartInstance = null;
+        let monthlyZoneChartInstance = null;
 
         function setYearMode(mode) {
             yearMode = mode;
@@ -810,6 +829,7 @@
 
                 estimatedZones = data.estimated_zones || [];
                 bpmHistogram = data.bpm_histogram || {};
+                monthlyBPMHistograms = data.monthly_bpm_histograms || {};
                 hasSavedZones = Boolean(data.has_saved_zones && data.saved_zones && data.saved_zones.length === 5);
                 savedZones = hasSavedZones ? data.saved_zones.map(z => ({ ...z })) : [];
 
@@ -1102,6 +1122,94 @@
             updateComparisonCells();
             renderBPMZoneLegend(dist, totalSeconds);
             renderBPMHistogramChart(totalSeconds);
+            renderMonthlyPolarizationChart();
+        }
+
+        function renderMonthlyPolarizationChart() {
+            const wrapper = document.getElementById('monthlyZoneWrapper');
+            const emptyEl = document.getElementById('monthlyZoneEmpty');
+            const months = Object.keys(monthlyBPMHistograms || {}).sort();
+
+            if (months.length === 0 || activeZones.length !== 5) {
+                wrapper.style.display = 'none';
+                emptyEl.style.display = 'block';
+                if (monthlyZoneChartInstance) {
+                    monthlyZoneChartInstance.destroy();
+                    monthlyZoneChartInstance = null;
+                }
+                return;
+            }
+
+            const zoneSeries = [[], [], [], [], []];
+            const monthLabels = [];
+            for (const m of months) {
+                const hist = monthlyBPMHistograms[m] || {};
+                const secsByZone = [0, 0, 0, 0, 0];
+                let total = 0;
+                for (const [bpmStr, secs] of Object.entries(hist)) {
+                    const bpm = parseInt(bpmStr, 10);
+                    if (isNaN(bpm) || secs <= 0 || bpm < 30 || bpm > 250) continue;
+                    const zIdx = getZoneIndexForBPM(bpm);
+                    secsByZone[zIdx] += secs;
+                    total += secs;
+                }
+                if (total <= 0) continue;
+                const [yr, mo] = m.split('-');
+                const d = new Date(parseInt(yr, 10), parseInt(mo, 10) - 1, 1);
+                monthLabels.push(d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }));
+                for (let z = 0; z < 5; z++) {
+                    zoneSeries[z].push(Math.round((secsByZone[z] / total) * 1000) / 10);
+                }
+            }
+
+            if (monthLabels.length === 0) {
+                wrapper.style.display = 'none';
+                emptyEl.style.display = 'block';
+                return;
+            }
+
+            wrapper.style.display = 'block';
+            emptyEl.style.display = 'none';
+
+            const datasets = activeZones.map((z, idx) => ({
+                label: z.name,
+                data: zoneSeries[idx],
+                backgroundColor: ZONE_COLORS[idx] + 'd9',
+                borderColor: ZONE_COLORS[idx],
+                borderWidth: 0.5,
+                stack: 'zones'
+            }));
+
+            const ctx = document.getElementById('monthlyZoneChart').getContext('2d');
+            if (monthlyZoneChartInstance) monthlyZoneChartInstance.destroy();
+            monthlyZoneChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: { labels: monthLabels, datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: {
+                        legend: { position: 'bottom', labels: { color: '#334155', font: { weight: 600, size: 11 } } },
+                        tooltip: {
+                            callbacks: {
+                                label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)}%`
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { stacked: true, grid: { display: false }, ticks: { color: '#64748b' } },
+                        y: {
+                            stacked: true,
+                            min: 0,
+                            max: 100,
+                            ticks: { color: '#64748b', callback: v => `${v}%` },
+                            title: { display: true, text: '% of Monthly HR Time', color: '#475569', font: { weight: 600 } }
+                        }
+                    }
+                }
+            });
         }
 
         function getZoneIndexForBPM(bpm) {

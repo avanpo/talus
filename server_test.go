@@ -323,7 +323,7 @@ func TestServer_PagesAndAPIs(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("handleProgressPage returned status %d, expected %d", w.Code, http.StatusOK)
 	}
-	if !strings.Contains(w.Body.String(), "Fitness & Progress") {
+	if !strings.Contains(w.Body.String(), "Run Fitness - talus") {
 		t.Errorf("handleProgressPage missing expected title in body")
 	}
 
