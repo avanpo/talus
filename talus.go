@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -200,6 +204,9 @@ func main() {
 		}
 		fmt.Println("Synchronization finished successfully.")
 
+	case "route":
+		runRouteCommand(os.Args[2:])
+
 	case "serve":
 		runServe(os.Args[2:])
 
@@ -262,12 +269,151 @@ func runServe(rawArgs []string) {
 	}
 }
 
+func runRouteCommand(rawArgs []string) {
+	routeCmd := flag.NewFlagSet("route", flag.ExitOnError)
+	startStr := routeCmd.String("start", "", "Start/stop coordinates as 'lat,lon' (e.g. '40.015,-105.270')")
+	distKm := routeCmd.Float64("distance", 10.0, "Target route distance in km")
+	tolKm := routeCmd.Float64("tolerance", 1.0, "Distance tolerance (+/- km)")
+	maxOverlap := routeCmd.Float64("max-overlap", 5.0, "Maximum allowed trail overlap percentage (0-100)")
+	minRuns := routeCmd.Int("min-runs", 2, "Minimum unique runs required on a trail segment")
+	sport := routeCmd.String("sport", "run", "Sport filter: 'run', 'foot' (run+hike+walk), or 'all'")
+	allowRepeat := routeCmd.Bool("allow-repeat-loops", false, "Allow repeating a sub-loop that meets --min-loop-gain")
+	minLoopGain := routeCmd.Float64("min-loop-gain", 400.0, "Minimum elevation gain (m) for a repeatable sub-loop")
+	snapRadius := routeCmd.Float64("snap-radius", 25.0, "GPS trace snapping grid resolution in meters")
+	timeoutSec := routeCmd.Int("timeout", 15, "Search time budget in seconds")
+	maxResults := routeCmd.Int("top", 5, "Number of top route options to output")
+	maxCPUs := routeCmd.Int("max-cpus", 0, "Max CPU cores to use (default: 25% of host cores, min 1)")
+	maxMemGB := routeCmd.Int("max-mem-gb", 8, "Soft memory limit in GiB")
+	outDir := routeCmd.String("out-dir", "", "Directory to write output .gpx files (default: <data-dir>/routes)")
+	dataDirFlag := routeCmd.String("data-dir", "", "Directory containing raw activity JSON files (or $DATA_DIR)")
+
+	flagsWithArgs := map[string]bool{
+		"start": true, "distance": true, "tolerance": true, "max-overlap": true,
+		"min-runs": true, "sport": true, "min-loop-gain": true, "snap-radius": true,
+		"timeout": true, "top": true, "max-cpus": true, "max-mem-gb": true,
+		"out-dir": true, "data-dir": true,
+	}
+	_ = routeCmd.Parse(reorderArgs(flagsWithArgs, rawArgs))
+
+	args := routeCmd.Args()
+	posArg := ""
+	if len(args) >= 1 {
+		posArg = args[0]
+	}
+	dataDir, _, _ := resolveDirectories(posArg, *dataDirFlag, "", "")
+
+	// Enforce polite resource caps inside CLI execution
+	workers := *maxCPUs
+	if workers <= 0 {
+		workers = defaultRouteWorkers()
+	}
+	runtime.GOMAXPROCS(workers)
+	if *maxMemGB > 0 {
+		debug.SetMemoryLimit(int64(*maxMemGB) << 30)
+	}
+
+	var startLat, startLon float64
+	if strings.TrimSpace(*startStr) != "" {
+		parts := strings.Split(*startStr, ",")
+		if len(parts) != 2 {
+			fmt.Fprintf(os.Stderr, "Error: --start must be 'lat,lon' (got %q)\n", *startStr)
+			os.Exit(1)
+		}
+		var err1, err2 error
+		startLat, err1 = strconv.ParseFloat(strings.TrimSpace(parts[0]), 64)
+		startLon, err2 = strconv.ParseFloat(strings.TrimSpace(parts[1]), 64)
+		if err1 != nil || err2 != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid coordinates in --start %q\n", *startStr)
+			os.Exit(1)
+		}
+	} else {
+		starts := DetectFrequentStarts(dataDir, 1)
+		if len(starts) == 0 {
+			fmt.Fprintln(os.Stderr, "Error: --start lat,lon is required (no frequent start locations detected)")
+			os.Exit(1)
+		}
+		startLat, startLon = starts[0].Lat, starts[0].Lon
+		fmt.Printf("No --start provided; using most frequent start location: %.5f, %.5f (%d activities)\n",
+			startLat, startLon, starts[0].Count)
+	}
+
+	req := RouteBuildRequest{
+		StartLat:         startLat,
+		StartLon:         startLon,
+		TargetDistanceKm: *distKm,
+		ToleranceKm:      *tolKm,
+		MaxOverlapPct:    *maxOverlap,
+		MinRuns:          *minRuns,
+		SportFilter:      *sport,
+		AllowRepeatLoops: *allowRepeat,
+		MinLoopGainM:     *minLoopGain,
+		SnapRadiusM:      *snapRadius,
+		TimeoutSec:       *timeoutSec,
+		MaxResults:       *maxResults,
+		MaxCPUs:          workers,
+	}
+	if err := req.Normalize(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Building routes from %s (CPUs: %d, Mem limit: %d GiB)...\n", dataDir, workers, *maxMemGB)
+	progressFn := func(msg string) {
+		fmt.Printf("  %s\n", msg)
+	}
+
+	ctx := context.Background()
+	graph, err := BuildTrailGraph(ctx, dataDir, req, progressFn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error building trail graph: %v\n", err)
+		os.Exit(1)
+	}
+
+	out, err := FindTopRoutes(ctx, graph, req, progressFn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error finding routes: %v\n", err)
+		os.Exit(1)
+	}
+
+	destDir := *outDir
+	if destDir == "" {
+		destDir = filepath.Join(dataDir, "routes")
+	}
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output directory %s: %v\n", destDir, err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("\nTop %d routes (evaluated %d candidates in %.1fs):\n",
+		len(out.Routes), out.CandidatesFound, float64(out.ElapsedMs)/1000.0)
+	for i := range out.Routes {
+		r := &out.Routes[i]
+		gpxBytes, err := GenerateRouteGPX(r)
+		if err != nil {
+			continue
+		}
+		fname := fmt.Sprintf("route-%d-%.1fkm-%.0fm.gpx", r.Rank, r.DistanceKm, r.ElevationGainM)
+		fpath := filepath.Join(destDir, fname)
+		if err := os.WriteFile(fpath, gpxBytes, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing %s: %v\n", fpath, err)
+			continue
+		}
+		repeatNote := ""
+		if r.RepeatInfo != nil {
+			repeatNote = fmt.Sprintf(" [%dx %.1fkm loop, +%.0fm/lap]", r.RepeatInfo.Laps, r.RepeatInfo.LoopDistanceKm, r.RepeatInfo.LoopGainM)
+		}
+		fmt.Printf("  #%d [%s]: %.2f km | +%.0fm gain (%.1f m/km) | %.1f%% overlap%s -> %s\n",
+			r.Rank, r.DistinctLabel, r.DistanceKm, r.ElevationGainM, r.VertPerKm, r.OverlapPct, repeatNote, fpath)
+	}
+}
+
 func printUsageAndExit() {
 	fmt.Println("talus: local endurance telemetry & training analytics dashboard")
 	fmt.Println()
 	fmt.Println("Usage:")
 	fmt.Println("  talus [backup_dir] [flags]       Start web dashboard & background sync daemon (default)")
 	fmt.Println("  talus sync [backup_dir] [flags]  Run a one-off headless synchronization")
+	fmt.Println("  talus route [backup_dir] [flags] Build high-elevation loop routes from personal GPS history")
 	fmt.Println()
 	fmt.Println("Directory flags:")
 	fmt.Println("  --data-dir <path>                Directory for raw activity JSON data (default: [backup_dir] or $DATA_DIR)")
@@ -285,6 +431,19 @@ func printUsageAndExit() {
 	fmt.Println("  --check-updates                  Scan all activities to detect edits (titles, crops, gear)")
 	fmt.Println("  --refresh <id1,id2>              Force re-download of specific activity IDs")
 	fmt.Println("  --force                          Force overwrite of all existing files")
+	fmt.Println()
+	fmt.Println("Route flags (talus route):")
+	fmt.Println("  --start <lat,lon>                Start/finish coordinates (auto-detects most frequent start if omitted)")
+	fmt.Println("  --distance <km>                  Target distance in km (default: 10)")
+	fmt.Println("  --tolerance <km>                 Distance tolerance +/- km (default: 1)")
+	fmt.Println("  --max-overlap <pct>              Max trail overlap percentage (default: 5)")
+	fmt.Println("  --min-runs <n>                   Min unique runs per trail segment (default: 2)")
+	fmt.Println("  --allow-repeat-loops             Allow repeating a high-elevation loop")
+	fmt.Println("  --min-loop-gain <m>              Min elevation gain (m) for a repeatable loop (default: 400)")
+	fmt.Println("  --timeout <sec>                  Search time budget in seconds (default: 15)")
+	fmt.Println("  --max-cpus <n>                   Max CPU cores (default: 25% of host cores)")
+	fmt.Println("  --max-mem-gb <gb>                Soft memory limit in GiB (default: 8)")
+	fmt.Println("  --out-dir <path>                 Output directory for GPX files (default: <data-dir>/routes)")
 	fmt.Println()
 	os.Exit(0)
 }

@@ -1,0 +1,1124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Route Builder - talus</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛰️</text></svg>">
+    <link rel="stylesheet" href="/common.css">
+    <script src="/common.js"></script>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-body: #f8fafc;
+            --bg-card: #ffffff;
+            --bg-card-hover: #f1f5f9;
+            --bg-subtle: #f1f5f9;
+            --border: #e2e8f0;
+            --border-light: #cbd5e1;
+            --text-main: #0f172a;
+            --text-muted: #64748b;
+            --text-dim: #94a3b8;
+            --primary: #2563eb;
+            --primary-hover: #1d4ed8;
+            --emerald: #16a34a;
+            --amber: #d97706;
+            --rose: #e11d48;
+            --indigo: #6366f1;
+            --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-body);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header {
+            background-color: var(--bg-card);
+            border-bottom: 1px solid var(--border);
+            padding: 0.85rem 1.5rem;
+            position: sticky;
+            top: 0;
+            z-index: 500;
+        }
+
+        .header-inner {
+            max-width: 1400px;
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            font-size: 1.35rem;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            text-decoration: none;
+            color: var(--text-main);
+        }
+
+        .brand-icon { font-size: 1.5rem; }
+        .brand-badge {
+            font-size: 0.7rem;
+            background-color: #eff6ff;
+            color: var(--primary);
+            border: 1px solid #bfdbfe;
+            padding: 0.2rem 0.5rem;
+            border-radius: 9999px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+
+        nav {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .nav-link {
+            padding: 0.5rem 0.9rem;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            text-decoration: none;
+            color: var(--text-muted);
+            transition: all 0.15s ease;
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+
+        .nav-link:hover {
+            color: var(--text-main);
+            background-color: var(--bg-subtle);
+        }
+
+        .nav-link.active {
+            color: #fff;
+            background-color: var(--primary);
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background-color: var(--bg-subtle);
+            border: 1px solid var(--border);
+            padding: 0.4rem 0.85rem;
+            border-radius: 9999px;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--emerald);
+        }
+        .status-dot.syncing {
+            background-color: var(--amber);
+            animation: pulse 1.2s infinite;
+        }
+        .status-dot.error {
+            background-color: var(--rose);
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(0.85); }
+        }
+
+        .btn {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            font-size: 0.88rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background-color 0.15s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.4rem;
+        }
+        .btn:hover:not(:disabled) { background-color: var(--primary-hover); }
+        .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+        .btn-secondary {
+            background-color: var(--bg-subtle);
+            color: var(--text-main);
+            border: 1px solid var(--border);
+        }
+        .btn-secondary:hover:not(:disabled) { background-color: #e2e8f0; }
+        .btn-danger {
+            background-color: var(--rose);
+            color: white;
+        }
+        .btn-danger:hover:not(:disabled) { background-color: #be123c; }
+        .btn-sm {
+            padding: 0.35rem 0.65rem;
+            font-size: 0.78rem;
+        }
+
+        main {
+            flex: 1;
+            max-width: 1400px;
+            width: 100%;
+            margin: 0 auto;
+            padding: 1.5rem;
+        }
+
+        .page-intro {
+            margin-bottom: 1.25rem;
+        }
+        .page-intro h1 {
+            font-size: 1.45rem;
+            font-weight: 700;
+            margin-bottom: 0.3rem;
+        }
+        .page-intro p {
+            color: var(--text-muted);
+            font-size: 0.92rem;
+        }
+
+        .builder-grid {
+            display: grid;
+            grid-template-columns: 340px 1fr;
+            gap: 1.25rem;
+            align-items: start;
+        }
+
+        .card {
+            background-color: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1.15rem;
+            box-shadow: var(--shadow);
+        }
+
+        .card-title {
+            font-size: 0.98rem;
+            font-weight: 700;
+            margin-bottom: 0.9rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.5rem;
+        }
+
+        .form-group {
+            margin-bottom: 0.85rem;
+        }
+        .form-group label {
+            display: block;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-bottom: 0.3rem;
+        }
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.65rem;
+        }
+        .form-control {
+            width: 100%;
+            padding: 0.48rem 0.65rem;
+            border: 1px solid var(--border-light);
+            border-radius: 6px;
+            font-size: 0.88rem;
+            color: var(--text-main);
+            background-color: #fff;
+        }
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+        }
+
+        .hint {
+            font-size: 0.74rem;
+            color: var(--text-dim);
+            margin-top: 0.25rem;
+        }
+
+        .preset-row {
+            display: flex;
+            gap: 0.35rem;
+            margin-top: 0.35rem;
+            flex-wrap: wrap;
+        }
+        .chip {
+            font-size: 0.74rem;
+            font-weight: 600;
+            padding: 0.22rem 0.55rem;
+            border-radius: 9999px;
+            border: 1px solid var(--border);
+            background-color: var(--bg-subtle);
+            color: var(--text-muted);
+            cursor: pointer;
+            transition: all 0.12s ease;
+        }
+        .chip:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background-color: #eff6ff;
+        }
+
+        .starts-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.3rem;
+            margin-top: 0.35rem;
+        }
+        .start-chip {
+            text-align: left;
+            font-size: 0.76rem;
+            padding: 0.35rem 0.55rem;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--bg-subtle);
+            color: var(--text-main);
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .start-chip:hover {
+            border-color: var(--primary);
+            background: #eff6ff;
+        }
+        .start-chip span.count {
+            color: var(--text-muted);
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: var(--text-main);
+            cursor: pointer;
+            margin-bottom: 0.4rem;
+        }
+        .checkbox-row input {
+            width: 16px;
+            height: 16px;
+            accent-color: var(--primary);
+            cursor: pointer;
+        }
+
+        .repeat-box {
+            background-color: var(--bg-subtle);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.7rem;
+            margin-bottom: 0.85rem;
+        }
+
+        details.advanced-box {
+            margin-bottom: 0.9rem;
+            border-top: 1px solid var(--border);
+            padding-top: 0.65rem;
+        }
+        details.advanced-box summary {
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            cursor: pointer;
+            margin-bottom: 0.5rem;
+        }
+
+        .action-bar {
+            display: flex;
+            gap: 0.5rem;
+        }
+        .action-bar .btn {
+            flex: 1;
+            padding: 0.62rem 1rem;
+        }
+
+        .job-banner {
+            margin-top: 0.85rem;
+            padding: 0.65rem 0.75rem;
+            border-radius: 8px;
+            font-size: 0.8rem;
+            border: 1px solid var(--border);
+            background-color: var(--bg-subtle);
+            color: var(--text-muted);
+            display: none;
+        }
+        .job-banner.visible { display: block; }
+        .job-banner.running {
+            background-color: #eff6ff;
+            border-color: #bfdbfe;
+            color: #1e40af;
+        }
+        .job-banner.done {
+            background-color: #f0fdf4;
+            border-color: #bbf7d0;
+            color: #166534;
+        }
+        .job-banner.error {
+            background-color: #fff1f2;
+            border-color: #fecdd3;
+            color: #9f1239;
+        }
+
+        .right-col {
+            display: flex;
+            flex-direction: column;
+            gap: 1.15rem;
+            min-width: 0;
+        }
+
+        .map-card {
+            padding: 0.85rem;
+        }
+        .map-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+            margin-bottom: 0.65rem;
+            font-size: 0.82rem;
+            color: var(--text-muted);
+        }
+        .map-toggles {
+            display: flex;
+            align-items: center;
+            gap: 0.9rem;
+            flex-wrap: wrap;
+        }
+        .map-toggles label {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            cursor: pointer;
+            font-weight: 500;
+            color: var(--text-main);
+        }
+        #routeMap {
+            width: 100%;
+            height: 460px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            z-index: 1;
+        }
+
+        .routes-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(235px, 1fr));
+            gap: 0.75rem;
+        }
+
+        .route-card {
+            background: var(--bg-card);
+            border: 2px solid var(--border);
+            border-radius: 10px;
+            padding: 0.85rem;
+            cursor: pointer;
+            transition: all 0.14s ease;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .route-card:hover {
+            border-color: var(--border-light);
+            background-color: #fcfdff;
+        }
+        .route-card.selected {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+        }
+
+        .route-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.4rem;
+        }
+        .route-rank {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.45rem;
+            font-weight: 700;
+            font-size: 0.92rem;
+        }
+        .color-swatch {
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+            display: inline-block;
+            flex-shrink: 0;
+        }
+
+        .badge {
+            font-size: 0.68rem;
+            font-weight: 700;
+            padding: 0.16rem 0.45rem;
+            border-radius: 9999px;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        .badge-top { background: #dbeafe; color: #1d4ed8; }
+        .badge-distinct { background: #dcfce7; color: #15803d; }
+        .badge-variant { background: #f1f5f9; color: #475569; }
+        .badge-repeat { background: #fef3c7; color: #b45309; }
+
+        .route-metrics {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.4rem;
+            font-size: 0.82rem;
+        }
+        .metric-item {
+            background: var(--bg-subtle);
+            border-radius: 6px;
+            padding: 0.35rem 0.5rem;
+        }
+        .metric-label {
+            font-size: 0.68rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+        }
+        .metric-val {
+            font-weight: 700;
+            font-size: 0.92rem;
+            color: var(--text-main);
+        }
+
+        .route-card-footer {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.4rem;
+            margin-top: auto;
+            padding-top: 0.3rem;
+        }
+
+        .profile-wrap {
+            height: 210px;
+            position: relative;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 2rem 1rem;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        @media (max-width: 960px) {
+            .builder-grid {
+                grid-template-columns: 1fr;
+            }
+            #routeMap {
+                height: 360px;
+            }
+        }
+    </style>
+</head>
+<body>
+<header>
+    <div class="header-inner">
+        <a href="/" class="brand">
+            <span class="brand-icon">⛰️</span>
+            <span>talus</span>
+            <span class="brand-badge">Local Telemetry</span>
+        </a>
+        <nav>
+            <a href="/" class="nav-link">Volume</a>
+            <a href="/activities" class="nav-link">Activities</a>
+            <a href="/progress" class="nav-link">Run Fitness</a>
+            <a href="/hr-zones" class="nav-link">HR Zones</a>
+            <a href="/routes" class="nav-link active">Route Builder</a>
+        </nav>
+        <div class="header-actions">
+            <div class="status-pill">
+                <span class="status-dot" id="statusDot"></span>
+                <span id="statusText">Checking...</span>
+            </div>
+            <button class="btn" id="btnSync" onclick="talusTriggerSync()">Sync Now</button>
+        </div>
+    </div>
+</header>
+
+<main>
+    <div class="page-intro">
+        <h1>Personal Trail Route Builder</h1>
+        <p>Generate high-elevation loop routes built exclusively from trails you've actually run. Runs on demand with polite CPU &amp; memory limits.</p>
+    </div>
+
+    <div class="builder-grid">
+        <!-- Left Controls Column -->
+        <div class="card">
+            <div class="card-title">Route Parameters</div>
+
+            <div class="form-group">
+                <label for="startCoords">Start / Finish Coordinates (lat, lon)</label>
+                <input type="text" id="startCoords" class="form-control" placeholder="e.g. 40.0150, -105.2705">
+                <div class="hint">Click anywhere on the map or pick a frequent start below.</div>
+                <div id="frequentStarts" class="starts-list"></div>
+            </div>
+
+            <div class="form-group">
+                <div class="form-row">
+                    <div>
+                        <label for="targetDist">Target Distance (km)</label>
+                        <input type="number" id="targetDist" class="form-control" value="10" min="1" max="150" step="0.5">
+                    </div>
+                    <div>
+                        <label for="tolerance">Tolerance (± km)</label>
+                        <input type="number" id="tolerance" class="form-control" value="1" min="0.2" max="20" step="0.5">
+                    </div>
+                </div>
+                <div class="preset-row">
+                    <button type="button" class="chip" onclick="applyPreset(10, 1, false)">10k Loop</button>
+                    <button type="button" class="chip" onclick="applyPreset(15, 1.5, false)">15k Loop</button>
+                    <button type="button" class="chip" onclick="applyPreset(20, 1.5, false)">20k Long</button>
+                    <button type="button" class="chip" onclick="applyPreset(30, 2, true)">30k Vert</button>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <div class="form-row">
+                    <div>
+                        <label for="maxOverlap">Max Overlap (%)</label>
+                        <input type="number" id="maxOverlap" class="form-control" value="5" min="0" max="100" step="1">
+                    </div>
+                    <div>
+                        <label for="minRuns">Min Runs / Trail</label>
+                        <input type="number" id="minRuns" class="form-control" value="2" min="1" max="50" step="1">
+                    </div>
+                </div>
+                <div class="hint">Overlap counts any trail traversed twice, even in opposite directions.</div>
+            </div>
+
+            <div class="form-group">
+                <label for="sportFilter">Activity Types to Include</label>
+                <select id="sportFilter" class="form-control">
+                    <option value="run" selected>Runs &amp; Trail Runs only</option>
+                    <option value="foot">Runs, Hikes &amp; Walks</option>
+                    <option value="all">All GPS Activities</option>
+                </select>
+            </div>
+
+            <div class="repeat-box">
+                <label class="checkbox-row">
+                    <input type="checkbox" id="allowRepeatLoops" onchange="toggleRepeatInput()">
+                    Allow repeating high-vert loops
+                </label>
+                <div class="hint" style="margin-bottom: 0.5rem;">Useful for 20k–30k runs: repeat a big climbing loop if it meets the minimum elevation gain below.</div>
+                <div id="repeatGainGroup" style="display: none;">
+                    <label for="minLoopGain" style="font-size:0.78rem;font-weight:600;color:var(--text-muted);display:block;margin-bottom:0.25rem;">Min Loop Elevation Gain (m)</label>
+                    <input type="number" id="minLoopGain" class="form-control" value="400" min="50" max="5000" step="50">
+                </div>
+            </div>
+
+            <details class="advanced-box">
+                <summary>Advanced Settings</summary>
+                <div class="form-row">
+                    <div>
+                        <label for="snapRadius">GPS Snap Grid (m)</label>
+                        <input type="number" id="snapRadius" class="form-control" value="25" min="10" max="100" step="5">
+                    </div>
+                    <div>
+                        <label for="timeoutSec">Search Budget (s)</label>
+                        <input type="number" id="timeoutSec" class="form-control" value="15" min="5" max="120" step="5">
+                    </div>
+                </div>
+            </details>
+
+            <div class="action-bar">
+                <button class="btn" id="btnBuild" onclick="startRouteBuild()">Build Top 5 Routes</button>
+                <button class="btn btn-danger" id="btnCancel" onclick="cancelRouteBuild()" style="display:none; flex: 0 0 auto;">Cancel</button>
+            </div>
+
+            <div id="jobBanner" class="job-banner"></div>
+        </div>
+
+        <!-- Right Map + Results Column -->
+        <div class="right-col">
+            <div class="card map-card">
+                <div class="map-toolbar">
+                    <span id="mapInfo">Click on the map to set your start/finish point.</span>
+                    <div class="map-toggles">
+                        <label><input type="checkbox" id="toggleAllRoutes" checked onchange="renderMapRoutes()"> Show all 5 routes</label>
+                        <label><input type="checkbox" id="toggleNetwork" onchange="renderNetworkLayer()"> Trail network</label>
+                    </div>
+                </div>
+                <div id="routeMap"></div>
+            </div>
+
+            <div class="card" id="resultsCard">
+                <div class="card-title">
+                    <span>Top Route Options</span>
+                    <span id="graphSummary" style="font-size: 0.78rem; font-weight: 500; color: var(--text-muted);"></span>
+                </div>
+                <div id="routesContainer" class="empty-state">
+                    Configure your parameters on the left and click <strong>Build Top 5 Routes</strong> to generate high-elevation loops from your GPS history.
+                </div>
+            </div>
+
+            <div class="card" id="profileCard" style="display: none;">
+                <div class="card-title">
+                    <span id="profileTitle">Elevation Profile</span>
+                    <span id="profileSubtitle" style="font-size: 0.8rem; font-weight: 500; color: var(--text-muted);"></span>
+                </div>
+                <div class="profile-wrap">
+                    <canvas id="elevationChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+</main>
+
+<script>
+const ROUTE_COLORS = ['#2563eb', '#e11d48', '#16a34a', '#d97706', '#7c3aed'];
+
+let map;
+let startMarker = null;
+let routeLayers = [];
+let networkLayerGroup = null;
+let currentOutput = null;
+let selectedRank = 1;
+let elevChart = null;
+let pollTimer = null;
+
+function initMap() {
+    map = L.map('routeMap').setView([39.8283, -98.5795], 4);
+    const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+    });
+    const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+        maxZoom: 17,
+        attribution: '&copy; OpenTopoMap (CC-BY-SA)'
+    });
+    osm.addTo(map);
+    L.control.layers({ 'Street / Trails': osm, 'Topographic': topo }).addTo(map);
+
+    networkLayerGroup = L.layerGroup();
+
+    map.on('click', function(e) {
+        setStartPoint(e.latlng.lat, e.latlng.lng, false);
+    });
+}
+
+function setStartPoint(lat, lon, panMap) {
+    const latFixed = Number(lat).toFixed(5);
+    const lonFixed = Number(lon).toFixed(5);
+    document.getElementById('startCoords').value = `${latFixed}, ${lonFixed}`;
+
+    if (startMarker) {
+        startMarker.setLatLng([lat, lon]);
+    } else {
+        startMarker = L.circleMarker([lat, lon], {
+            radius: 8,
+            fillColor: '#0f172a',
+            color: '#ffffff',
+            weight: 3,
+            opacity: 1,
+            fillOpacity: 1
+        }).addTo(map).bindTooltip('Start / Finish', { direction: 'top' });
+    }
+    if (panMap) {
+        map.setView([lat, lon], 13);
+    }
+}
+
+function applyPreset(dist, tol, repeat) {
+    document.getElementById('targetDist').value = dist;
+    document.getElementById('tolerance').value = tol;
+    document.getElementById('allowRepeatLoops').checked = repeat;
+    toggleRepeatInput();
+}
+
+function toggleRepeatInput() {
+    const checked = document.getElementById('allowRepeatLoops').checked;
+    document.getElementById('repeatGainGroup').style.display = checked ? 'block' : 'none';
+}
+
+async function loadFrequentStarts() {
+    try {
+        const res = await fetch('/api/routes/starts');
+        if (!res.ok) return;
+        const data = await res.json();
+        const container = document.getElementById('frequentStarts');
+        if (!data.starts || data.starts.length === 0) return;
+
+        container.innerHTML = '';
+        data.starts.forEach((s, idx) => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'start-chip';
+            const label = s.sample_name ? `${s.lat.toFixed(4)}, ${s.lon.toFixed(4)}` : `${s.lat.toFixed(4)}, ${s.lon.toFixed(4)}`;
+            btn.innerHTML = `<span>📍 ${label}</span><span class="count">${s.count} runs</span>`;
+            btn.title = s.sample_name ? `Example: ${s.sample_name}` : 'Frequent start location';
+            btn.onclick = () => setStartPoint(s.lat, s.lon, true);
+            container.appendChild(btn);
+
+            if (idx === 0 && !document.getElementById('startCoords').value.trim()) {
+                setStartPoint(s.lat, s.lon, true);
+            }
+        });
+    } catch (e) {
+        console.error('Failed to load frequent starts:', e);
+    }
+}
+
+function parseStartCoords() {
+    const raw = document.getElementById('startCoords').value.trim();
+    const parts = raw.split(',');
+    if (parts.length !== 2) return null;
+    const lat = parseFloat(parts[0].trim());
+    const lon = parseFloat(parts[1].trim());
+    if (isNaN(lat) || isNaN(lon)) return null;
+    return { lat, lon };
+}
+
+function setBanner(cls, text) {
+    const b = document.getElementById('jobBanner');
+    b.className = 'job-banner visible ' + cls;
+    b.innerText = text;
+}
+
+async function startRouteBuild() {
+    const coords = parseStartCoords();
+    if (!coords) {
+        setBanner('error', 'Please enter valid start coordinates (lat, lon) or click on the map.');
+        return;
+    }
+
+    const payload = {
+        start_lat: coords.lat,
+        start_lon: coords.lon,
+        target_distance_km: parseFloat(document.getElementById('targetDist').value) || 10,
+        tolerance_km: parseFloat(document.getElementById('tolerance').value) || 1,
+        max_overlap_pct: parseFloat(document.getElementById('maxOverlap').value),
+        min_runs: parseInt(document.getElementById('minRuns').value, 10) || 2,
+        sport_filter: document.getElementById('sportFilter').value,
+        allow_repeat_loops: document.getElementById('allowRepeatLoops').checked,
+        min_loop_gain_m: parseFloat(document.getElementById('minLoopGain').value) || 400,
+        snap_radius_m: parseFloat(document.getElementById('snapRadius').value) || 25,
+        timeout_sec: parseInt(document.getElementById('timeoutSec').value, 10) || 15,
+        max_results: 5
+    };
+    if (isNaN(payload.max_overlap_pct)) payload.max_overlap_pct = 5;
+
+    setStartPoint(coords.lat, coords.lon, false);
+    document.getElementById('btnBuild').disabled = true;
+    document.getElementById('btnCancel').style.display = 'inline-flex';
+    setBanner('running', 'Starting route builder job...');
+
+    try {
+        const res = await fetch('/api/routes/build', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            document.getElementById('btnBuild').disabled = false;
+            document.getElementById('btnCancel').style.display = 'none';
+            setBanner('error', data.error || 'Failed to start route builder.');
+            return;
+        }
+        startPolling();
+    } catch (e) {
+        document.getElementById('btnBuild').disabled = false;
+        document.getElementById('btnCancel').style.display = 'none';
+        setBanner('error', 'Request failed: ' + e);
+    }
+}
+
+async function cancelRouteBuild() {
+    try {
+        await fetch('/api/routes/cancel', { method: 'POST' });
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function startPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollStatus();
+    pollTimer = setInterval(pollStatus, 700);
+}
+
+async function pollStatus() {
+    try {
+        const res = await fetch('/api/routes/status');
+        if (!res.ok) return;
+        const st = await res.json();
+
+        if (st.state === 'running') {
+            document.getElementById('btnBuild').disabled = true;
+            document.getElementById('btnCancel').style.display = 'inline-flex';
+            setBanner('running', `${st.progress} (${st.elapsed_sec.toFixed(1)}s)`);
+        } else {
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+            document.getElementById('btnBuild').disabled = false;
+            document.getElementById('btnCancel').style.display = 'none';
+
+            if (st.state === 'done' && st.output) {
+                setBanner('done', `${st.progress} in ${st.elapsed_sec.toFixed(1)}s`);
+                currentOutput = st.output;
+                selectedRank = st.output.routes.length > 0 ? st.output.routes[0].rank : 1;
+                renderResults(st.output);
+            } else if (st.state === 'error') {
+                setBanner('error', st.error || 'Route builder failed.');
+            } else if (st.state === 'cancelled') {
+                setBanner('', 'Route build cancelled.');
+            }
+        }
+    } catch (e) {
+        console.error('Status poll error:', e);
+    }
+}
+
+function renderResults(out) {
+    document.getElementById('graphSummary').innerText =
+        `${out.activities_used} nearby activities • ${out.graph_nodes} junctions • ${out.graph_edges} segments • snapped ${out.snap_distance_m}m`;
+
+    const container = document.getElementById('routesContainer');
+    if (!out.routes || out.routes.length === 0) {
+        container.className = 'empty-state';
+        container.innerText = 'No valid routes found.';
+        return;
+    }
+
+    container.className = 'routes-grid';
+    container.innerHTML = '';
+
+    out.routes.forEach((r, idx) => {
+        const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
+        const card = document.createElement('div');
+        card.className = 'route-card' + (r.rank === selectedRank ? ' selected' : '');
+        card.onclick = () => selectRoute(r.rank);
+
+        let badgeClass = 'badge-variant';
+        if (r.distinct_label === 'Top Vert') badgeClass = 'badge-top';
+        else if (r.distinct_label === 'Distinct') badgeClass = 'badge-distinct';
+
+        let repeatBadge = '';
+        if (r.repeat_info) {
+            repeatBadge = `<div style="margin-top:0.15rem;"><span class="badge badge-repeat">${r.repeat_info.laps}× ${r.repeat_info.loop_distance_km} km loop (+${r.repeat_info.loop_gain_m}m/lap)</span></div>`;
+        }
+
+        card.innerHTML = `
+            <div class="route-card-header">
+                <span class="route-rank">
+                    <span class="color-swatch" style="background:${color}"></span>
+                    Option #${r.rank}
+                </span>
+                <span class="badge ${badgeClass}">${r.distinct_label}</span>
+            </div>
+            ${repeatBadge}
+            <div class="route-metrics">
+                <div class="metric-item">
+                    <div class="metric-label">Distance</div>
+                    <div class="metric-val">${r.distance_km.toFixed(2)} km</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Elev Gain</div>
+                    <div class="metric-val">+${Math.round(r.elevation_gain_m)} m</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Vert / km</div>
+                    <div class="metric-val">${r.vert_per_km.toFixed(1)} m</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Overlap</div>
+                    <div class="metric-val">${r.overlap_pct.toFixed(1)}%</div>
+                </div>
+            </div>
+            <div class="route-card-footer">
+                <span style="font-size:0.74rem;color:var(--text-muted);">Loss -${Math.round(r.elevation_loss_m)}m</span>
+                <a href="/api/routes/gpx?rank=${r.rank}" class="btn btn-secondary btn-sm" onclick="event.stopPropagation()">⬇ GPX</a>
+            </div>
+        `;
+        container.appendChild(card);
+    });
+
+    renderNetworkLayer();
+    renderMapRoutes(true);
+    renderElevationProfile();
+}
+
+function selectRoute(rank) {
+    selectedRank = rank;
+    if (!currentOutput) return;
+    document.querySelectorAll('.route-card').forEach((el, idx) => {
+        const r = currentOutput.routes[idx];
+        el.classList.toggle('selected', r && r.rank === selectedRank);
+    });
+    renderMapRoutes(false);
+    renderElevationProfile();
+}
+
+function renderNetworkLayer() {
+    networkLayerGroup.clearLayers();
+    if (!document.getElementById('toggleNetwork').checked || !currentOutput || !currentOutput.network_overlay) {
+        map.removeLayer(networkLayerGroup);
+        return;
+    }
+    currentOutput.network_overlay.forEach(seg => {
+        L.polyline(seg.points, {
+            color: '#64748b',
+            weight: Math.min(4, 1.5 + Math.log2(seg.run_count) * 0.6),
+            opacity: 0.45
+        }).addTo(networkLayerGroup);
+    });
+    networkLayerGroup.addTo(map);
+}
+
+function renderMapRoutes(fitBounds) {
+    routeLayers.forEach(l => map.removeLayer(l));
+    routeLayers = [];
+    if (!currentOutput || !currentOutput.routes) return;
+
+    const showAll = document.getElementById('toggleAllRoutes').checked;
+    let selectedLayer = null;
+
+    // Draw non-selected routes first so selected route stays on top
+    currentOutput.routes.forEach((r, idx) => {
+        if (r.rank === selectedRank) return;
+        if (!showAll) return;
+        const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
+        const poly = L.polyline(r.coordinates, {
+            color: color,
+            weight: 3,
+            opacity: 0.35
+        }).addTo(map);
+        poly.on('click', () => selectRoute(r.rank));
+        routeLayers.push(poly);
+    });
+
+    currentOutput.routes.forEach((r, idx) => {
+        if (r.rank !== selectedRank) return;
+        const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
+        const poly = L.polyline(r.coordinates, {
+            color: color,
+            weight: 5,
+            opacity: 0.92
+        }).addTo(map);
+        routeLayers.push(poly);
+        selectedLayer = poly;
+    });
+
+    if (startMarker) {
+        startMarker.bringToFront();
+    }
+    if (fitBounds && selectedLayer) {
+        map.fitBounds(selectedLayer.getBounds(), { padding: [30, 30] });
+    }
+}
+
+function renderElevationProfile() {
+    const card = document.getElementById('profileCard');
+    if (!currentOutput || !currentOutput.routes) {
+        card.style.display = 'none';
+        return;
+    }
+    const idx = currentOutput.routes.findIndex(r => r.rank === selectedRank);
+    if (idx < 0) {
+        card.style.display = 'none';
+        return;
+    }
+    const r = currentOutput.routes[idx];
+    const color = ROUTE_COLORS[idx % ROUTE_COLORS.length];
+    card.style.display = 'block';
+    document.getElementById('profileTitle').innerText = `Elevation Profile — Option #${r.rank}`;
+    document.getElementById('profileSubtitle').innerText =
+        `${r.distance_km.toFixed(2)} km • +${Math.round(r.elevation_gain_m)}m gain • -${Math.round(r.elevation_loss_m)}m loss`;
+
+    const ctx = document.getElementById('elevationChart').getContext('2d');
+    if (elevChart) {
+        elevChart.destroy();
+    }
+    elevChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: r.profile_dist_km,
+            datasets: [{
+                label: 'Elevation (m)',
+                data: r.profile_ele_m,
+                borderColor: color,
+                backgroundColor: color + '22',
+                borderWidth: 2,
+                pointRadius: 0,
+                fill: true,
+                tension: 0.2
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: { display: false },
+                tooltip: {
+                    callbacks: {
+                        title: items => `${items[0].label} km`,
+                        label: item => `${item.parsed.y} m`
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    title: { display: true, text: 'Distance (km)' },
+                    ticks: { maxTicksLimit: 10 }
+                },
+                y: {
+                    title: { display: true, text: 'Altitude (m)' }
+                }
+            }
+        }
+    });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    talusUpdateStatus();
+    setInterval(talusUpdateStatus, 5000);
+    initMap();
+    loadFrequentStarts();
+    // Check if there is an existing or running job on page load
+    pollStatus();
+});
+</script>
+</body>
+</html>

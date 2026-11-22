@@ -1565,6 +1565,98 @@ func handleActivitiesAPI(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+func handleRoutesPage(w http.ResponseWriter, r *http.Request) {
+	if !isDaemonConfigured(daemon) {
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
+
+	serveHTMLFile(w, "web/routes.html")
+}
+
+func handleRouteStartsAPI(w http.ResponseWriter, r *http.Request) {
+	if daemon == nil {
+		http.Error(w, "server not initialized", http.StatusInternalServerError)
+		return
+	}
+	starts := DetectFrequentStarts(daemon.dataDir, 5)
+	if starts == nil {
+		starts = []StartCluster{}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"starts": starts,
+	})
+}
+
+func handleRouteBuildAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if daemon == nil {
+		http.Error(w, "server not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	var req RouteBuildRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid JSON request: " + err.Error()})
+		return
+	}
+
+	mgr := GetRouteJobManager()
+	if err := mgr.Start(daemon.dataDir, req); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(mgr.Status())
+}
+
+func handleRouteStatusAPI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(GetRouteJobManager().Status())
+}
+
+func handleRouteCancelAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	cancelled := GetRouteJobManager().Cancel()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"cancelled": cancelled})
+}
+
+func handleRouteGPXAPI(w http.ResponseWriter, r *http.Request) {
+	rankStr := r.URL.Query().Get("rank")
+	rank, err := strconv.Atoi(rankStr)
+	if err != nil || rank < 1 {
+		rank = 1
+	}
+	route, err := GetRouteJobManager().GetRouteByRank(rank)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	gpxBytes, err := GenerateRouteGPX(route)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	filename := fmt.Sprintf("talus-route-%d-%.1fkm-%.0fm.gpx", route.Rank, route.DistanceKm, route.ElevationGainM)
+	w.Header().Set("Content-Type", "application/gpx+xml")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+	_, _ = w.Write(gpxBytes)
+}
+
 // StartWebServer starts the HTTP server and sync daemon.
 func StartWebServer(dir string, port int, syncInterval, checkUpdatesInterval time.Duration, noSync bool) error {
 	return StartWebServerWithDirs(dir, "", "", port, syncInterval, checkUpdatesInterval, noSync)
@@ -1591,6 +1683,7 @@ func StartWebServerWithDirs(dataDir, configDir, metadataDir string, port int, sy
 	mux.HandleFunc("/activity", handleActivitiesPage)
 	mux.HandleFunc("/progress", handleProgressPage)
 	mux.HandleFunc("/hr-zones", handleHRZonesPage)
+	mux.HandleFunc("/routes", handleRoutesPage)
 	mux.HandleFunc("/api/stats", handleStatsAPI)
 	mux.HandleFunc("/api/yoy", handleYoYVolumeAPI)
 	mux.HandleFunc("/api/shoes", handleShoesAPI)
@@ -1598,6 +1691,11 @@ func StartWebServerWithDirs(dataDir, configDir, metadataDir string, port int, sy
 	mux.HandleFunc("/api/hr-zones", handleHRZonesAPI)
 	mux.HandleFunc("/api/activities", handleActivitiesAPI)
 	mux.HandleFunc("/api/activity", handleActivityDetailAPI)
+	mux.HandleFunc("/api/routes/starts", handleRouteStartsAPI)
+	mux.HandleFunc("/api/routes/build", handleRouteBuildAPI)
+	mux.HandleFunc("/api/routes/status", handleRouteStatusAPI)
+	mux.HandleFunc("/api/routes/cancel", handleRouteCancelAPI)
+	mux.HandleFunc("/api/routes/gpx", handleRouteGPXAPI)
 	mux.HandleFunc("/api/status", handleStatusAPI)
 	mux.HandleFunc("/api/sync", handleTriggerSyncAPI)
 
