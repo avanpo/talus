@@ -244,6 +244,16 @@ func evalLoopCandidate(g *TrailGraph, steps []RouteStep, repeatInfo *RepeatLoopI
 	if len(steps) == 0 {
 		return nil
 	}
+	// Strictly enforce closed, continuous walk
+	if steps[0].From != steps[len(steps)-1].To {
+		return nil
+	}
+	for i := 1; i < len(steps); i++ {
+		if steps[i].From != steps[i-1].To {
+			return nil
+		}
+	}
+
 	length := 0.0
 	counts := make(map[int]int, len(steps))
 	edgeSet := make(map[int]float64, len(steps))
@@ -256,7 +266,7 @@ func evalLoopCandidate(g *TrailGraph, steps []RouteStep, repeatInfo *RepeatLoopI
 	// Track spatial corridor cells occupied by distinct edges to catch parallel out-and-backs
 	corridorOwner := make(map[gridKey]int, len(steps)*3)
 	spatialOverlapM := 0.0
-	const corridorCellM = 45.0
+	const corridorCellM = 25.0
 
 	for _, st := range steps {
 		e := &g.Edges[st.EdgeID]
@@ -283,11 +293,9 @@ func evalLoopCandidate(g *TrailGraph, steps []RouteStep, repeatInfo *RepeatLoopI
 		}
 
 		// Spatial corridor overlap check: only count when a *different* edge enters an already-used cell
-		// (same-edge repeats are accounted for by exact edge counts below).
 		if counts[st.EdgeID] == 1 {
 			for _, ck := range e.CorridorCells {
 				if owner, exists := corridorOwner[ck]; exists && owner != st.EdgeID {
-					// Don't double-penalize edges inside an explicitly exempted repeating loop
 					if exemptOverlapEdges == nil || exemptOverlapEdges[st.EdgeID] <= 1 {
 						spatialOverlapM += corridorCellM
 					}
@@ -317,8 +325,19 @@ func evalLoopCandidate(g *TrailGraph, steps []RouteStep, repeatInfo *RepeatLoopI
 		totalOverlap = length
 	}
 
-	// Compute clean elevation gain/loss along the continuous loop profile with 3.0m hysteresis
-	gain, loss := computeDirectionalGain(relAlts, 3.0)
+	// Distribute any residual loop-closure elevation drift linearly so Gain == Loss on a closed loop
+	if n := len(relAlts); n >= 2 {
+		drift := relAlts[n-1] - relAlts[0]
+		if math.Abs(drift) > 0.01 {
+			denom := float64(n - 1)
+			for i := 1; i < n; i++ {
+				relAlts[i] -= drift * (float64(i) / denom)
+			}
+		}
+	}
+
+	// Compute clean elevation gain/loss along the continuous loop profile with 1.5m hysteresis
+	gain, loss := computeDirectionalGain(relAlts, 1.5)
 
 	return &candidateRoute{
 		steps:      steps,
@@ -347,7 +366,7 @@ func reverseSteps(steps []RouteStep) []RouteStep {
 }
 
 // isSharpUTurn returns true if transitioning from lastEdge (arriving at u) to nextEdge (leaving u)
-// reverses direction sharply (> ~145 degrees).
+// reverses straight back on a parallel line (> ~164 degrees), while still allowing genuine mountain switchbacks.
 func isSharpUTurn(g *TrailGraph, u, lastEdgeID, nextEdgeID int) bool {
 	if lastEdgeID < 0 {
 		return false
@@ -360,9 +379,8 @@ func isSharpUTurn(g *TrailGraph, u, lastEdgeID, nextEdgeID int) bool {
 	if (ax == 0 && ay == 0) || (lx == 0 && ly == 0) {
 		return false
 	}
-	// dot product near -1 means heading straight back where we came from
 	dot := ax*lx + ay*ly
-	return dot < -0.82
+	return dot < -0.96
 }
 
 // FindTopRoutes runs the anytime multi-strategy route optimizer on TrailGraph.
@@ -400,7 +418,11 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 	edgeHeat := make([]float64, len(g.Edges))
 
 	addCandidate := func(c *candidateRoute) {
-		if c == nil {
+		if c == nil || len(c.steps) == 0 {
+			return
+		}
+		// Strictly require every route to start and finish at g.StartNode
+		if c.steps[0].From != g.StartNode || c.steps[len(c.steps)-1].To != g.StartNode {
 			return
 		}
 		if c.length < minDistM || c.length > maxDistM {
@@ -426,6 +448,9 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 	}
 	mainCtx, mainCancel := context.WithTimeout(searchCtx, mainBudget)
 	defer mainCancel()
+
+	// Phase 0: Targeted Summit-Seeking Disjoint Loops (finds big climbs even across flat approaches!)
+	runSummitSeekingLoops(mainCtx, g, distToStart, minDistM, maxDistM, maxOverlapFrac, addCandidate)
 
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
@@ -501,6 +526,167 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 	}
 
 	return out, nil
+}
+
+// runSummitSeekingLoops targets the highest-elevation reachable junctions in the graph and
+// constructs edge-disjoint climb + descent loops (StartNode -> Summit -> StartNode), including
+// randomized weight perturbations to explore diverse big-climb loops in [minDistM, maxDistM].
+func runSummitSeekingLoops(
+	ctx context.Context,
+	g *TrailGraph,
+	distToStart []float64,
+	minDistM, maxDistM, maxOverlapFrac float64,
+	emit func(*candidateRoute),
+) {
+	type summitNode struct {
+		id  int
+		ele float64
+	}
+	var summits []summitNode
+	startEle := g.Nodes[g.StartNode].Ele
+	for i := range g.Nodes {
+		if i == g.StartNode {
+			continue
+		}
+		d := distToStart[i]
+		if math.IsInf(d, 1) || d < 500 || d*2.0 > maxDistM {
+			continue
+		}
+		if len(g.Nodes[i].Edges) < 2 {
+			continue
+		}
+		summits = append(summits, summitNode{id: i, ele: g.Nodes[i].Ele - startEle})
+	}
+	if len(summits) == 0 {
+		return
+	}
+	sort.Slice(summits, func(i, j int) bool { return summits[i].ele > summits[j].ele })
+	// Keep top 25 highest-elevation summits, spatially spaced so we explore multiple ridges/peaks
+	var pickedSummits []int
+	for _, s := range summits {
+		if len(pickedSummits) >= 25 {
+			break
+		}
+		tooClose := false
+		for _, prevID := range pickedSummits {
+			if math.Hypot(g.Nodes[s.id].X-g.Nodes[prevID].X, g.Nodes[s.id].Y-g.Nodes[prevID].Y) < 400.0 {
+				tooClose = true
+				break
+			}
+		}
+		if !tooClose {
+			pickedSummits = append(pickedSummits, s.id)
+		}
+	}
+
+	rng := rand.New(rand.NewSource(time.Now().UnixNano() + 99991))
+	n := len(g.Nodes)
+
+	// Helper: Dijkstra with customizable per-edge multiplier
+	weightedPath := func(src, dst int, edgeWeight func(eid int) float64) ([]RouteStep, bool) {
+		cost := make([]float64, n)
+		prevNode := make([]int, n)
+		prevEdge := make([]int, n)
+		for i := range cost {
+			cost[i] = math.Inf(1)
+			prevNode[i] = -1
+			prevEdge[i] = -1
+		}
+		cost[src] = 0
+		visited := make([]bool, n)
+
+		for iter := 0; iter < n; iter++ {
+			u := -1
+			best := math.Inf(1)
+			for i := 0; i < n; i++ {
+				if !visited[i] && cost[i] < best {
+					best = cost[i]
+					u = i
+				}
+			}
+			if u == -1 || u == dst {
+				break
+			}
+			visited[u] = true
+			for _, eid := range g.Nodes[u].Edges {
+				e := &g.Edges[eid]
+				v := e.Other(u)
+				w := edgeWeight(eid)
+				if cost[u]+w < cost[v] {
+					cost[v] = cost[u] + w
+					prevNode[v] = u
+					prevEdge[v] = eid
+				}
+			}
+		}
+		return reconstructShortestPath(g, src, dst, prevNode, prevEdge)
+	}
+
+	for _, summit := range pickedSummits {
+		if ctx.Err() != nil {
+			return
+		}
+		// Try 6 randomized climb/descent pairs per summit (plus shortest disjoint pair)
+		for trial := 0; trial < 6; trial++ {
+			if ctx.Err() != nil {
+				return
+			}
+			noise := make([]float64, len(g.Edges))
+			for i := range noise {
+				if trial == 0 {
+					noise[i] = 1.0
+				} else {
+					// Random perturbation favors longer/steeper scenic trails to reach target distance
+					noise[i] = 0.5 + rng.Float64()*1.8
+				}
+			}
+			// Outbound: StartNode -> summit (slightly prefer climbing edges)
+			pOut, ok := weightedPath(g.StartNode, summit, func(eid int) float64 {
+				e := &g.Edges[eid]
+				bonus := 1.0 / (1.0 + (e.GainUV+e.GainVU)/math.Max(e.Length, 30.0)*3.0)
+				return e.Length * noise[eid] * bonus
+			})
+			if !ok || len(pOut) == 0 {
+				continue
+			}
+
+			// Heavily penalize outbound edges + their corridor cells to get a truly disjoint return
+			avoidEdges := make(map[int]bool, len(pOut))
+			avoidCorr := make(map[gridKey]bool, len(pOut)*3)
+			for _, st := range pOut {
+				avoidEdges[st.EdgeID] = true
+				for _, ck := range g.Edges[st.EdgeID].CorridorCells {
+					avoidCorr[ck] = true
+				}
+			}
+
+			pBack, ok := weightedPath(summit, g.StartNode, func(eid int) float64 {
+				e := &g.Edges[eid]
+				w := e.Length * noise[eid]
+				if avoidEdges[eid] {
+					return w * 40.0
+				}
+				hits := 0
+				for _, ck := range e.CorridorCells {
+					if avoidCorr[ck] {
+						hits++
+					}
+				}
+				if hits > 0 {
+					w *= (1.0 + float64(hits)*4.0)
+				}
+				return w
+			})
+			if !ok || len(pBack) == 0 {
+				continue
+			}
+
+			combined := make([]RouteStep, 0, len(pOut)+len(pBack))
+			combined = append(combined, pOut...)
+			combined = append(combined, pBack...)
+			emit(evalLoopCandidate(g, combined, nil, nil))
+		}
+	}
 }
 
 // runMeetInTheMiddleBatch generates clean, node-simple outward paths fanned across compass
@@ -594,22 +780,26 @@ func runMeetInTheMiddleBatch(
 					continue
 				}
 
-				// Reject edges whose interior corridor already overlaps this half-path
+				// Penalize (rather than hard-kill) edges whose corridor touches this half-path,
+				// so tight mountain switchbacks remain reachable while parallel folds are discouraged.
 				corridorHits := 0
 				for _, ck := range e.CorridorCells {
 					if _, exists := corridor[ck]; exists {
 						corridorHits++
 					}
 				}
-				if corridorHits > 1 {
-					continue
-				}
 
 				// Elevation gain score (capped gain rate so no single steep glitch dominates)
 				fwdGain := e.GainFrom(u)
 				revGain := e.GainFrom(v)
 				gainRate := math.Min(0.35, (fwdGain+0.5*revGain)/math.Max(e.Length, 30.0))
-				score := 1.0 + gainRate*30.0
+				score := 1.0 + gainRate*35.0
+				if g.Nodes[v].Ele > g.Nodes[u].Ele {
+					score *= 1.25
+				}
+				if corridorHits > 0 {
+					score /= (1.0 + float64(corridorHits)*2.5)
+				}
 
 				// Favor smooth forward continuation (small turn angle)
 				if lastEdge >= 0 {
@@ -875,7 +1065,7 @@ func runGuidedWalkBatch(
 				} else {
 					for _, ck := range e.CorridorCells {
 						if _, exists := corridor[ck]; exists {
-							ovAdd += 45.0
+							ovAdd += 25.0
 						}
 					}
 				}
@@ -1280,6 +1470,17 @@ func buildRouteResult(g *TrailGraph, c *candidateRoute, rank int, distinctLabel 
 				fullPts = append(fullPts, [3]float64{pt[0], pt[1], curEle + (pt[2] - base)})
 			}
 			curEle -= e.NetDeltaUV
+		}
+	}
+
+	// Distribute any residual loop-closure elevation drift linearly so chart & GPX close cleanly at start altitude
+	if n := len(fullPts); n >= 2 {
+		drift := fullPts[n-1][2] - fullPts[0][2]
+		if math.Abs(drift) > 0.01 {
+			denom := float64(n - 1)
+			for i := 1; i < n; i++ {
+				fullPts[i][2] -= drift * (float64(i) / denom)
+			}
 		}
 	}
 

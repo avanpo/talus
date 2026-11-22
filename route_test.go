@@ -449,3 +449,84 @@ func TestRouteGraphBarometerOffsetAndJitterResistance(t *testing.T) {
 		t.Errorf("expected true ~200m elevation gain (immune to baro offsets & corrupted spike), got %.0fm", top.ElevationGainM)
 	}
 }
+
+func TestRouteBuilderStartEndAndSummitSeeking(t *testing.T) {
+	dir := t.TempDir()
+	lat0, lon0 := 49.79939, -119.49437
+	proj := newLocalProj(lat0, lon0)
+
+	// Build a ~20km mountain summit loop: flat 2km approach east -> steep climb to +600m summit -> separate descent -> flat return
+	toLL := func(x, y, ele float64) [3]float64 {
+		lat, lon := proj.toLatLon(x, y)
+		return [3]float64{lat, lon, ele}
+	}
+	summitLoop := [][3]float64{
+		toLL(0, 0, 430),
+		toLL(2500, 400, 435),     // flat approach north-east
+		toLL(6200, 1500, 720),    // climbing
+		toLL(9300, 0, 1030),      // +600m summit!
+		toLL(6200, -1700, 700),   // separate descent ridge
+		toLL(2500, -600, 435),    // flat return south-west
+		toLL(0, 0, 430),
+	}
+	writeSyntheticActivity(t, dir, 5001, "Big Summit Loop 1", summitLoop)
+	writeSyntheticActivity(t, dir, 5002, "Big Summit Loop 2", summitLoop)
+
+	// Also add two ~20km rolling foothill loops (+200m gain) right next to home
+	foothill1 := makeLoopWaypoints(lat0, lon0, math.Pi*0.75, 20000, 430, 200)
+	writeSyntheticActivity(t, dir, 5003, "Foothill 1A", foothill1)
+	writeSyntheticActivity(t, dir, 5004, "Foothill 1B", foothill1)
+
+	foothill2 := makeLoopWaypoints(lat0, lon0, math.Pi*1.35, 20000, 430, 220)
+	writeSyntheticActivity(t, dir, 5005, "Foothill 2A", foothill2)
+	writeSyntheticActivity(t, dir, 5006, "Foothill 2B", foothill2)
+
+	req := RouteBuildRequest{
+		StartLat:         lat0,
+		StartLon:         lon0,
+		TargetDistanceKm: 20.0,
+		ToleranceKm:      3.0,
+		MaxOverlapPct:    5.0,
+		MinRuns:          2,
+		TimeoutSec:       4,
+		MaxResults:       5,
+	}
+	if err := req.Normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+
+	g, err := BuildTrailGraph(context.Background(), dir, req, nil)
+	if err != nil {
+		t.Fatalf("BuildTrailGraph: %v", err)
+	}
+	out, err := FindTopRoutes(context.Background(), g, req, nil)
+	if err != nil {
+		t.Fatalf("FindTopRoutes: %v", err)
+	}
+	if len(out.Routes) < 3 {
+		t.Fatalf("expected at least 3 routes, got %d", len(out.Routes))
+	}
+
+	// #1 route must find the +600m summit loop despite the flat approach
+	if out.Routes[0].ElevationGainM < 520 {
+		t.Errorf("expected summit-seeking solver to find ~600m summit loop, got %.0fm", out.Routes[0].ElevationGainM)
+	}
+
+	// Strict start/end & loop-closure invariant check on EVERY returned route
+	for _, r := range out.Routes {
+		if len(r.Coordinates) < 2 {
+			t.Fatalf("route #%d has < 2 coordinates", r.Rank)
+		}
+		dStart := haversineM(lat0, lon0, r.Coordinates[0][0], r.Coordinates[0][1])
+		dEnd := haversineM(lat0, lon0, r.Coordinates[len(r.Coordinates)-1][0], r.Coordinates[len(r.Coordinates)-1][1])
+		if dStart > g.SnapDistanceM+50.0 {
+			t.Errorf("route #%d start is %.1fm from house (snap=%.1fm)", r.Rank, dStart, g.SnapDistanceM)
+		}
+		if dEnd > g.SnapDistanceM+50.0 {
+			t.Errorf("route #%d end is %.1fm from house (snap=%.1fm)", r.Rank, dEnd, g.SnapDistanceM)
+		}
+		if math.Abs(r.ElevationGainM-r.ElevationLossM) > 5.0 {
+			t.Errorf("route #%d closed loop gain (%.0fm) != loss (%.0fm)", r.Rank, r.ElevationGainM, r.ElevationLossM)
+		}
+	}
+}

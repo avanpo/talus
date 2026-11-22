@@ -1198,15 +1198,15 @@ func buildCleanTrailGraph(
 			minRC = minRuns
 		}
 
-		// Compute directional elevation gain with a 3.0m hysteresis threshold
-		gainUV, gainVU := computeDirectionalGain(relAlts, 3.0)
+		// Compute directional elevation gain with a 1.5m hysteresis threshold (data is already 5-pt smoothed + median filtered)
+		gainUV, gainVU := computeDirectionalGain(relAlts, 1.5)
 
 		// Compute unit leaving/arriving direction vectors for anti-U-turn filtering
 		startDirX, startDirY := computeChainDir(sNodes, chain, true)
 		endDirX, endDirY := computeChainDir(sNodes, chain, false)
 
-		// Compute interior 45m spatial corridor cells (excluding 45m near endpoints U and V)
-		corridor := computeCorridorCells(sNodes, chain, 45.0)
+		// Compute interior 25m spatial corridor cells (excluding 50m near endpoints U and V)
+		corridor := computeCorridorCells(sNodes, chain, 25.0)
 
 		edgeID := len(edges)
 		edges = append(edges, GraphEdge{
@@ -1302,11 +1302,12 @@ func computeCorridorCells(sNodes []*superNode, chain []int, cellSize float64) []
 	}
 	u := sNodes[chain[0]]
 	v := sNodes[chain[len(chain)-1]]
+	endMargin := math.Max(50.0, cellSize*2.0)
 	seen := make(map[gridKey]struct{}, len(chain))
 	var out []gridKey
 	for i := 1; i < len(chain)-1; i++ {
 		sn := sNodes[chain[i]]
-		if math.Hypot(sn.x-u.x, sn.y-u.y) < cellSize || math.Hypot(sn.x-v.x, sn.y-v.y) < cellSize {
+		if math.Hypot(sn.x-u.x, sn.y-u.y) < endMargin || math.Hypot(sn.x-v.x, sn.y-v.y) < endMargin {
 			continue
 		}
 		gk := gridKey{
