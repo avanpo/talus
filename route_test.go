@@ -378,3 +378,74 @@ func TestDetectFrequentStartsAndHTTPAPI(t *testing.T) {
 		t.Errorf("GPX response missing <gpx root element")
 	}
 }
+
+func TestRouteGraphBarometerOffsetAndJitterResistance(t *testing.T) {
+	dir := t.TempDir()
+	lat0, lon0 := 49.79809, -119.49037
+	proj := newLocalProj(lat0, lon0)
+
+	// True 10km loop with +200m elevation gain
+	baseLoop := makeLoopWaypoints(lat0, lon0, 0.4, 10000, 600, 200)
+
+	// Write 6 runs with different day-to-day barometric offsets (-40m..+35m) AND ±12m GPS jitter
+	baroOffsets := []float64{-40, -15, 0, 12, 25, 35}
+	for rIdx, offset := range baroOffsets {
+		jittered := make([][3]float64, len(baseLoop))
+		for i, wp := range baseLoop {
+			x, y := proj.toXY(wp[0], wp[1])
+			// Deterministic ±12m lateral jitter (not at start/end)
+			if i > 0 && i < len(baseLoop)-1 {
+				x += float64((rIdx%3)-1) * 10.0
+				y += float64(((rIdx+i)%3)-1) * 10.0
+			}
+			lat, lon := proj.toLatLon(x, y)
+			jittered[i] = [3]float64{lat, lon, wp[2] + offset}
+		}
+		writeSyntheticActivity(t, dir, int64(4000+rIdx), fmt.Sprintf("Jittered Baro Run %d", rIdx), jittered)
+	}
+
+	// Add 1 corrupted track with huge fake altitude spikes (+250m)
+	corrupted := make([][3]float64, len(baseLoop))
+	copy(corrupted, baseLoop)
+	corrupted[1][2] += 250
+	corrupted[3][2] += 250
+	writeSyntheticActivity(t, dir, 4099, "Corrupted Alt Track", corrupted)
+
+	req := RouteBuildRequest{
+		StartLat:         lat0,
+		StartLon:         lon0,
+		TargetDistanceKm: 10.0,
+		ToleranceKm:      1.0,
+		MaxOverlapPct:    5.0,
+		MinRuns:          2,
+		TimeoutSec:       3,
+		MaxResults:       5,
+	}
+	if err := req.Normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+
+	g, err := BuildTrailGraph(context.Background(), dir, req, nil)
+	if err != nil {
+		t.Fatalf("BuildTrailGraph: %v", err)
+	}
+	// Jittered runs should collapse cleanly instead of creating hundreds of fake braided junctions
+	if len(g.Nodes) > 30 {
+		t.Errorf("expected braided jitter to collapse cleanly (<30 junctions), got %d junctions / %d edges", len(g.Nodes), len(g.Edges))
+	}
+
+	out, err := FindTopRoutes(context.Background(), g, req, nil)
+	if err != nil {
+		t.Fatalf("FindTopRoutes: %v", err)
+	}
+	if len(out.Routes) == 0 {
+		t.Fatalf("expected clean <=5%% overlap loop to be found")
+	}
+	top := out.Routes[0]
+	if top.OverlapPct > 5.0 {
+		t.Errorf("expected <= 5%% overlap, got %.1f%%", top.OverlapPct)
+	}
+	if top.ElevationGainM < 150 || top.ElevationGainM > 260 {
+		t.Errorf("expected true ~200m elevation gain (immune to baro offsets & corrupted spike), got %.0fm", top.ElevationGainM)
+	}
+}

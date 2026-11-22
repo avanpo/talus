@@ -31,7 +31,7 @@ type RouteBuildRequest struct {
 	SportFilter      string  `json:"sport_filter"`       // "run" (default), "foot" (run+hike+walk), "all"
 	AllowRepeatLoops bool    `json:"allow_repeat_loops"` // default false
 	MinLoopGainM     float64 `json:"min_loop_gain_m"`    // default 400.0
-	SnapRadiusM      float64 `json:"snap_radius_m"`      // default 25.0
+	SnapRadiusM      float64 `json:"snap_radius_m"`      // default 35.0
 	TimeoutSec       int     `json:"timeout_sec"`        // default 15
 	MaxResults       int     `json:"max_results"`        // default 5
 	MaxCPUs          int     `json:"max_cpus"`           // 0 = auto (~25% of NumCPU, min 1)
@@ -79,10 +79,10 @@ func (r *RouteBuildRequest) Normalize() error {
 		r.MinLoopGainM = 400.0
 	}
 	if r.SnapRadiusM <= 0 {
-		r.SnapRadiusM = 25.0
+		r.SnapRadiusM = 35.0
 	}
-	if r.SnapRadiusM < 10.0 {
-		r.SnapRadiusM = 10.0
+	if r.SnapRadiusM < 15.0 {
+		r.SnapRadiusM = 15.0
 	}
 	if r.SnapRadiusM > 100.0 {
 		r.SnapRadiusM = 100.0
@@ -134,14 +134,20 @@ type GraphNode struct {
 
 // GraphEdge is a simplified trail segment between two junctions.
 type GraphEdge struct {
-	ID       int
-	U        int
-	V        int
-	Length   float64      // meters
-	GainUV   float64      // elevation gain going U -> V (meters)
-	GainVU   float64      // elevation gain going V -> U (meters)
-	RunCount int          // unique activity count supporting this segment
-	Points   [][3]float64 // ordered [lat, lon, ele] from U to V
+	ID            int
+	U             int
+	V             int
+	Length        float64      // meters
+	GainUV        float64      // elevation gain going U -> V (meters)
+	GainVU        float64      // elevation gain going V -> U (meters)
+	NetDeltaUV    float64      // net elevation change U -> V (meters)
+	RunCount      int          // unique activity count supporting this segment
+	Points        [][3]float64 // ordered [lat, lon, ele] from U to V
+	StartDirX     float64      // unit vector leaving U toward V
+	StartDirY     float64
+	EndDirX       float64 // unit vector arriving at V from U
+	EndDirY       float64
+	CorridorCells []gridKey // interior 45m spatial cells for proximity overlap detection
 }
 
 // Other returns the opposite endpoint of the edge from node u.
@@ -158,6 +164,22 @@ func (e *GraphEdge) GainFrom(u int) float64 {
 		return e.GainUV
 	}
 	return e.GainVU
+}
+
+// LeaveDir returns the unit direction vector when leaving node u along this edge.
+func (e *GraphEdge) LeaveDir(u int) (float64, float64) {
+	if e.U == u {
+		return e.StartDirX, e.StartDirY
+	}
+	return -e.EndDirX, -e.EndDirY
+}
+
+// ArriveDir returns the unit direction vector when arriving at node v along this edge.
+func (e *GraphEdge) ArriveDir(v int) (float64, float64) {
+	if e.V == v {
+		return e.EndDirX, e.EndDirY
+	}
+	return -e.StartDirX, -e.StartDirY
 }
 
 // TrailGraph is the personal trail network built from historical GPS traces.
@@ -307,11 +329,11 @@ type gridEdgeKey struct {
 	b gridKey
 }
 
-func makeGridEdgeKey(u, v gridKey) gridEdgeKey {
+func makeGridEdgeKey(u, v gridKey) (gridEdgeKey, bool) {
 	if u.gx < v.gx || (u.gx == v.gx && u.gy < v.gy) {
-		return gridEdgeKey{a: u, b: v}
+		return gridEdgeKey{a: u, b: v}, true
 	}
-	return gridEdgeKey{a: v, b: u}
+	return gridEdgeKey{a: v, b: u}, false
 }
 
 type cellAccum struct {
@@ -322,10 +344,17 @@ type cellAccum struct {
 	altCnt int
 }
 
+// edgeDeltaSample stores a single activity's observed relative elevation change (b - a) on an edge.
+type edgeDeltaAccum struct {
+	runCount int
+	deltas   []float64 // canonical delta (alt(b) - alt(a)), capped for memory
+}
+
 type activityGridExtract struct {
-	actID int64
-	cells map[gridKey]cellAccum
-	edges map[gridEdgeKey]struct{}
+	actID      int64
+	cells      map[gridKey]cellAccum
+	edgeDeltas map[gridEdgeKey]float64 // canonical delta (b - a)
+	edgeHasEle map[gridEdgeKey]bool
 }
 
 // graphCache avoids re-parsing 1,100+ JSON files when tweaking route distance/overlap/loop params.
@@ -373,7 +402,7 @@ func computeActivitiesDirSignature(activitiesDir string) (string, []string, erro
 }
 
 // BuildTrailGraph streams activity JSON files within the reachable bounding box and constructs
-// a simplified undirected trail graph filtered by min_runs.
+// a clean, topologically simplified undirected trail graph with robust median relative elevations.
 func BuildTrailGraph(ctx context.Context, dataDir string, req RouteBuildRequest, progressFn func(string)) (*TrailGraph, error) {
 	startTime := time.Now()
 	activitiesDir := filepath.Join(dataDir, "activities")
@@ -397,12 +426,11 @@ func BuildTrailGraph(ctx context.Context, dataDir string, req RouteBuildRequest,
 		dirSig:      dirSig,
 		startLatQ:   int64(math.Round(req.StartLat * 10000)),
 		startLonQ:   int64(math.Round(req.StartLon * 10000)),
-		maxRadiusQ:  int(math.Ceil(maxRadiusM / 1000.0)), // bucket to 1km so slight dist changes reuse cache
+		maxRadiusQ:  int(math.Ceil(maxRadiusM / 1000.0)),
 		snapRadiusQ: int(math.Round(req.SnapRadiusM)),
 		minRuns:     req.MinRuns,
 		sportFilter: req.SportFilter,
 	}
-	// Use the rounded-up radius for actual filtering so cached graph always covers the request
 	effectiveRadiusM := float64(cacheKey.maxRadiusQ) * 1000.0
 
 	routeGraphCacheMu.Lock()
@@ -421,7 +449,11 @@ func BuildTrailGraph(ctx context.Context, dataDir string, req RouteBuildRequest,
 	}
 
 	proj := newLocalProj(req.StartLat, req.StartLon)
-	cellSize := req.SnapRadiusM
+	// Pass 1 uses a fine 20m grid; Pass 2 merges nearby cells within SnapRadiusM to eliminate grid-boundary braiding!
+	fineCellSize := math.Min(20.0, req.SnapRadiusM*0.65)
+	if fineCellSize < 12.0 {
+		fineCellSize = 12.0
+	}
 	maxRadiusSq := effectiveRadiusM * effectiveRadiusM
 
 	workers := req.MaxCPUs
@@ -441,7 +473,7 @@ func BuildTrailGraph(ctx context.Context, dataDir string, req RouteBuildRequest,
 				if ctx.Err() != nil {
 					return
 				}
-				ext := parseActivityForGrid(path, proj, maxRadiusSq, cellSize, req.SportFilter)
+				ext := parseActivityForGrid(path, proj, maxRadiusSq, fineCellSize, req.SportFilter)
 				if ext != nil {
 					select {
 					case results <- ext:
@@ -470,7 +502,7 @@ func BuildTrailGraph(ctx context.Context, dataDir string, req RouteBuildRequest,
 	}()
 
 	globalCells := make(map[gridKey]*cellAccum, 4096)
-	globalEdgeRuns := make(map[gridEdgeKey]int, 8192)
+	globalEdges := make(map[gridEdgeKey]*edgeDeltaAccum, 8192)
 	activitiesUsed := 0
 
 	for ext := range results {
@@ -491,8 +523,16 @@ func BuildTrailGraph(ctx context.Context, dataDir string, req RouteBuildRequest,
 			gc.altCnt += acc.altCnt
 		}
 		// Each activity contributes at most 1 to each undirected edge's run count
-		for ek := range ext.edges {
-			globalEdgeRuns[ek]++
+		for ek, delta := range ext.edgeDeltas {
+			ge := globalEdges[ek]
+			if ge == nil {
+				ge = &edgeDeltaAccum{}
+				globalEdges[ek] = ge
+			}
+			ge.runCount++
+			if ext.edgeHasEle[ek] && len(ge.deltas) < 40 {
+				ge.deltas = append(ge.deltas, delta)
+			}
 		}
 	}
 
@@ -506,68 +546,15 @@ func BuildTrailGraph(ctx context.Context, dataDir string, req RouteBuildRequest,
 	}
 
 	if progressFn != nil {
-		progressFn(fmt.Sprintf("Building trail graph from %d nearby activities (min %d runs/segment)...", activitiesUsed, req.MinRuns))
+		progressFn(fmt.Sprintf("Simplifying trail skeleton from %d nearby activities (min %d runs/segment)...", activitiesUsed, req.MinRuns))
 	}
 
-	// Filter edges by min_runs and build raw adjacency
-	rawAdj := make(map[gridKey][]gridKey)
-	keptEdges := make(map[gridEdgeKey]int)
-	for ek, cnt := range globalEdgeRuns {
-		if cnt < req.MinRuns {
-			continue
-		}
-		if _, ok := globalCells[ek.a]; !ok {
-			continue
-		}
-		if _, ok := globalCells[ek.b]; !ok {
-			continue
-		}
-		keptEdges[ek] = cnt
-		rawAdj[ek.a] = append(rawAdj[ek.a], ek.b)
-		rawAdj[ek.b] = append(rawAdj[ek.b], ek.a)
+	// Pass 2: Traffic-ordered spatial merging of fine cells within SnapRadiusM to collapse parallel GPS braids
+	// into a single clean 1-cell-wide trail spine!
+	graph, err := buildCleanTrailGraph(proj, globalCells, globalEdges, req.SnapRadiusM, req.MinRuns)
+	if err != nil {
+		return nil, err
 	}
-
-	if len(keptEdges) == 0 {
-		return nil, fmt.Errorf("no trail segments met the minimum %d runs requirement within %.1f km (try lowering min_runs)",
-			req.MinRuns, effectiveRadiusM/1000.0)
-	}
-
-	// Find nearest surviving cell to start coordinates (0, 0)
-	var startCell gridKey
-	bestStartDistSq := math.Inf(1)
-	for k := range rawAdj {
-		acc := globalCells[k]
-		cx := acc.sumX / float64(acc.count)
-		cy := acc.sumY / float64(acc.count)
-		d2 := cx*cx + cy*cy
-		if d2 < bestStartDistSq {
-			bestStartDistSq = d2
-			startCell = k
-		}
-	}
-	snapDistM := math.Sqrt(bestStartDistSq)
-	if snapDistM > 2000.0 {
-		return nil, fmt.Errorf("nearest trail segment with >=%d runs is %.0fm away from start point (max snap 2000m)",
-			req.MinRuns, snapDistM)
-	}
-
-	// BFS from startCell to keep only the connected component reachable from start
-	reachable := make(map[gridKey]bool)
-	queue := []gridKey{startCell}
-	reachable[startCell] = true
-	for len(queue) > 0 {
-		curr := queue[0]
-		queue = queue[1:]
-		for _, nb := range rawAdj[curr] {
-			if !reachable[nb] {
-				reachable[nb] = true
-				queue = append(queue, nb)
-			}
-		}
-	}
-
-	// Contract degree-2 chains into clean GraphEdges between junctions
-	graph := contractGridToGraph(proj, startCell, snapDistM, reachable, rawAdj, globalCells, keptEdges)
 	graph.ActivitiesLoaded = len(files)
 	graph.ActivitiesUsed = activitiesUsed
 	graph.BuildDuration = time.Since(startTime)
@@ -606,16 +593,15 @@ func parseActivityForGrid(path string, proj localProj, maxRadiusSq, cellSize flo
 	if len(latlng) < 2 {
 		return nil
 	}
-	alts := act.Streams.Altitude.Data
-	hasAlt := len(alts) == len(latlng)
+	rawAlts := act.Streams.Altitude.Data
+	hasAlt := len(rawAlts) == len(latlng)
 
-	// Quick coarse check: sample every ~20th point to see if activity ever enters bounding box
+	// Quick coarse check: sample ~40 points to see if activity ever enters bounding box
 	near := false
 	step := len(latlng) / 40
 	if step < 1 {
 		step = 1
 	}
-	// Expand coarse check radius slightly so we don't miss an activity clipping the edge
 	coarseRadiusSq := maxRadiusSq * 1.44
 	for i := 0; i < len(latlng); i += step {
 		x, y := proj.toXY(latlng[i][0], latlng[i][1])
@@ -628,17 +614,25 @@ func parseActivityForGrid(path string, proj localProj, maxRadiusSq, cellSize flo
 		return nil
 	}
 
+	// Smooth this activity's altitude stream first (5-point moving average) to suppress per-second GPS/baro noise
+	var smoothAlts []float64
+	if hasAlt {
+		smoothAlts = smoothActivityAltitude(rawAlts)
+	}
+
 	ext := &activityGridExtract{
-		actID: act.ID,
-		cells: make(map[gridKey]cellAccum, 128),
-		edges: make(map[gridEdgeKey]struct{}, 128),
+		actID:      act.ID,
+		cells:      make(map[gridKey]cellAccum, 128),
+		edgeDeltas: make(map[gridEdgeKey]float64, 128),
+		edgeHasEle: make(map[gridEdgeKey]bool, 128),
 	}
 
 	var prevKey gridKey
-	var prevX, prevY float64
+	var prevX, prevY, prevAlt float64
 	hasPrev := false
 
-	const maxStepJumpM = 150.0 // ignore GPS pause/resume teleports
+	const maxStepJumpM = 150.0
+	const maxPlausibleGrade = 0.45 // >45% sustained grade over a step is almost certainly a GPS/baro glitch
 
 	for i, pt := range latlng {
 		x, y := proj.toXY(pt[0], pt[1])
@@ -656,177 +650,580 @@ func parseActivityForGrid(path string, proj localProj, maxRadiusSq, cellSize flo
 		acc.sumX += x
 		acc.sumY += y
 		acc.count++
-		if hasAlt && !math.IsNaN(alts[i]) {
-			acc.sumAlt += alts[i]
+		curAlt := 0.0
+		if hasAlt && !math.IsNaN(smoothAlts[i]) {
+			curAlt = smoothAlts[i]
+			acc.sumAlt += curAlt
 			acc.altCnt++
 		}
 		ext.cells[gk] = acc
 
 		if hasPrev {
-			dx := x - prevX
-			dy := y - prevY
-			dist := math.Hypot(dx, dy)
+			dist := math.Hypot(x-prevX, y-prevY)
 			if dist <= maxStepJumpM && gk != prevKey {
-				ek := makeGridEdgeKey(prevKey, gk)
-				ext.edges[ek] = struct{}{}
+				ek, forward := makeGridEdgeKey(prevKey, gk)
+				if _, exists := ext.edgeDeltas[ek]; !exists {
+					ext.edgeDeltas[ek] = 0
+					if hasAlt && !math.IsNaN(curAlt) && !math.IsNaN(prevAlt) && dist >= 3.0 {
+						grade := (curAlt - prevAlt) / dist
+						// Reject implausible elevation spikes (>45% sustained grade)
+						if math.Abs(grade) <= maxPlausibleGrade {
+							if !forward {
+								grade = -grade
+							}
+							ext.edgeDeltas[ek] = grade
+							ext.edgeHasEle[ek] = true
+						}
+					}
+				}
 			}
 		}
 
 		prevKey = gk
 		prevX = x
 		prevY = y
+		prevAlt = curAlt
 		hasPrev = true
 	}
 
-	if len(ext.edges) == 0 {
+	if len(ext.edgeDeltas) == 0 {
 		return nil
 	}
 	return ext
 }
 
-// contractGridToGraph simplifies chains of degree-2 grid cells into trail segments between junctions.
-func contractGridToGraph(
+// smoothActivityAltitude applies a 5-point moving average to suppress per-second altitude chatter.
+func smoothActivityAltitude(alts []float64) []float64 {
+	n := len(alts)
+	out := make([]float64, n)
+	if n < 5 {
+		copy(out, alts)
+		return out
+	}
+	for i := 0; i < n; i++ {
+		lo := i - 2
+		if lo < 0 {
+			lo = 0
+		}
+		hi := i + 2
+		if hi >= n {
+			hi = n - 1
+		}
+		sum := 0.0
+		cnt := 0
+		for j := lo; j <= hi; j++ {
+			if !math.IsNaN(alts[j]) {
+				sum += alts[j]
+				cnt++
+			}
+		}
+		if cnt > 0 {
+			out[i] = sum / float64(cnt)
+		} else {
+			out[i] = alts[i]
+		}
+	}
+	return out
+}
+
+func medianFloat(vals []float64) float64 {
+	if len(vals) == 0 {
+		return 0
+	}
+	cp := make([]float64, len(vals))
+	copy(cp, vals)
+	sort.Float64s(cp)
+	mid := len(cp) / 2
+	if len(cp)%2 == 1 {
+		return cp[mid]
+	}
+	return 0.5 * (cp[mid-1] + cp[mid])
+}
+
+type superEdgeKey struct {
+	u int
+	v int
+}
+
+func makeSuperEdgeKey(a, b int) (superEdgeKey, bool) {
+	if a < b {
+		return superEdgeKey{u: a, v: b}, true
+	}
+	return superEdgeKey{u: b, v: a}, false
+}
+
+type superNode struct {
+	id     int
+	sumX   float64
+	sumY   float64
+	sumW   float64
+	x, y   float64
+	sumAlt float64
+	altW   float64
+	alt    float64
+}
+
+// buildCleanTrailGraph merges braided GPS cells into a 1-node-wide skeleton, prunes redundant
+// micro-triangles and short dead-end spurs, and contracts degree-2 chains into TrailGraph edges.
+func buildCleanTrailGraph(
 	proj localProj,
-	startCell gridKey,
-	snapDistM float64,
-	reachable map[gridKey]bool,
-	rawAdj map[gridKey][]gridKey,
-	cells map[gridKey]*cellAccum,
-	edgeRuns map[gridEdgeKey]int,
-) *TrailGraph {
-	// Identify junction cells: startCell or any cell with degree != 2
-	isJunction := make(map[gridKey]bool)
-	isJunction[startCell] = true
-	for k := range reachable {
+	globalCells map[gridKey]*cellAccum,
+	globalEdges map[gridEdgeKey]*edgeDeltaAccum,
+	snapRadiusM float64,
+	minRuns int,
+) (*TrailGraph, error) {
+	// 1. Collect fine cells that participate in at least one edge (even before minRuns,
+	// so parallel braided traces of 1+1 runs on the same trail can merge and reach minRuns=2!).
+	type fineCellInfo struct {
+		key    gridKey
+		x, y   float64
+		alt    float64
+		hasAlt bool
+		weight int
+	}
+	cellTraffic := make(map[gridKey]int, len(globalCells))
+	for ek, ed := range globalEdges {
+		cellTraffic[ek.a] += ed.runCount
+		cellTraffic[ek.b] += ed.runCount
+	}
+
+	var fineList []fineCellInfo
+	for k, acc := range globalCells {
+		if cellTraffic[k] == 0 {
+			continue
+		}
+		alt := 0.0
+		if acc.altCnt > 0 {
+			alt = acc.sumAlt / float64(acc.altCnt)
+		}
+		fineList = append(fineList, fineCellInfo{
+			key:    k,
+			x:      acc.sumX / float64(acc.count),
+			y:      acc.sumY / float64(acc.count),
+			alt:    alt,
+			hasAlt: acc.altCnt > 0,
+			weight: cellTraffic[k],
+		})
+	}
+	if len(fineList) == 0 {
+		return nil, fmt.Errorf("no connected trail points found")
+	}
+
+	// Sort highest-traffic cells first so popular trail centers become the canonical spine nodes
+	sort.Slice(fineList, func(i, j int) bool {
+		return fineList[i].weight > fineList[j].weight
+	})
+
+	// 2. Greedy spatial clustering at radius = snapRadiusM using a coarse hash bucket for O(1) lookup
+	var sNodes []*superNode
+	bucketSize := snapRadiusM
+	buckets := make(map[gridKey][]int, len(fineList)/2)
+	cellToSuper := make(map[gridKey]int, len(fineList))
+	mergeRadSq := snapRadiusM * snapRadiusM
+
+	for _, fc := range fineList {
+		bx := int32(math.Floor(fc.x / bucketSize))
+		by := int32(math.Floor(fc.y / bucketSize))
+		bestID := -1
+		bestD2 := mergeRadSq
+
+		for dx := int32(-1); dx <= 1; dx++ {
+			for dy := int32(-1); dy <= 1; dy++ {
+				for _, sid := range buckets[gridKey{bx + dx, by + dy}] {
+					sn := sNodes[sid]
+					d2 := (fc.x-sn.x)*(fc.x-sn.x) + (fc.y-sn.y)*(fc.y-sn.y)
+					if d2 <= bestD2 {
+						bestD2 = d2
+						bestID = sid
+					}
+				}
+			}
+		}
+
+		w := float64(fc.weight)
+		if bestID >= 0 {
+			sn := sNodes[bestID]
+			sn.sumX += fc.x * w
+			sn.sumY += fc.y * w
+			sn.sumW += w
+			sn.x = sn.sumX / sn.sumW
+			sn.y = sn.sumY / sn.sumW
+			if fc.hasAlt {
+				sn.sumAlt += fc.alt * w
+				sn.altW += w
+				sn.alt = sn.sumAlt / sn.altW
+			}
+			cellToSuper[fc.key] = bestID
+		} else {
+			sid := len(sNodes)
+			sn := &superNode{
+				id:   sid,
+				sumX: fc.x * w,
+				sumY: fc.y * w,
+				sumW: w,
+				x:    fc.x,
+				y:    fc.y,
+			}
+			if fc.hasAlt {
+				sn.sumAlt = fc.alt * w
+				sn.altW = w
+				sn.alt = fc.alt
+			}
+			sNodes = append(sNodes, sn)
+			buckets[gridKey{bx, by}] = append(buckets[gridKey{bx, by}], sid)
+			cellToSuper[fc.key] = sid
+		}
+	}
+
+	// 3. Remap fine edges onto super-nodes, summing run counts and aggregating relative elevation deltas
+	type superEdgeData struct {
+		runCount int
+		deltas   []float64 // canonical delta (v - u) where u < v
+	}
+	sEdges := make(map[superEdgeKey]*superEdgeData, len(globalEdges)/2)
+
+	for ek, ed := range globalEdges {
+		su, ok1 := cellToSuper[ek.a]
+		sv, ok2 := cellToSuper[ek.b]
+		if !ok1 || !ok2 || su == sv {
+			continue
+		}
+		sek, sameDir := makeSuperEdgeKey(su, sv)
+		sed := sEdges[sek]
+		if sed == nil {
+			sed = &superEdgeData{}
+			sEdges[sek] = sed
+		}
+		sed.runCount += ed.runCount
+		for _, d := range ed.deltas {
+			if len(sed.deltas) >= 60 {
+				break
+			}
+			if sameDir {
+				sed.deltas = append(sed.deltas, d)
+			} else {
+				sed.deltas = append(sed.deltas, -d)
+			}
+		}
+	}
+
+	// Filter super-edges by minRuns
+	adj := make(map[int]map[int]bool)
+	keptSuperEdges := make(map[superEdgeKey]*superEdgeData)
+	for sek, sed := range sEdges {
+		if sed.runCount < minRuns {
+			continue
+		}
+		keptSuperEdges[sek] = sed
+		if adj[sek.u] == nil {
+			adj[sek.u] = make(map[int]bool)
+		}
+		if adj[sek.v] == nil {
+			adj[sek.v] = make(map[int]bool)
+		}
+		adj[sek.u][sek.v] = true
+		adj[sek.v][sek.u] = true
+	}
+
+	if len(keptSuperEdges) == 0 {
+		return nil, fmt.Errorf("no trail segments met the minimum %d runs requirement (try lowering min_runs)", minRuns)
+	}
+
+	// 4. Prune redundant micro-triangles (3 mutually adjacent super-nodes within ~2.3*snapRadiusM):
+	// remove the longest/least-trafficked chord edge so trails don't retain small zigzag chords.
+	maxTriLen := snapRadiusM * 2.3
+	type triCandidate struct {
+		sek superEdgeKey
+		rc  int
+		len float64
+	}
+	var triEdges []triCandidate
+	for sek, sed := range keptSuperEdges {
+		d := math.Hypot(sNodes[sek.u].x-sNodes[sek.v].x, sNodes[sek.u].y-sNodes[sek.v].y)
+		if d <= maxTriLen {
+			triEdges = append(triEdges, triCandidate{sek: sek, rc: sed.runCount, len: d})
+		}
+	}
+	// Consider lowest-traffic, longest chords first for removal
+	sort.Slice(triEdges, func(i, j int) bool {
+		if triEdges[i].rc != triEdges[j].rc {
+			return triEdges[i].rc < triEdges[j].rc
+		}
+		return triEdges[i].len > triEdges[j].len
+	})
+	for _, tc := range triEdges {
+		u, v := tc.sek.u, tc.sek.v
+		if !adj[u][v] {
+			continue
+		}
+		// Check if u and v share a common neighbor w such that u-w and w-v are both shorter than or comparable to u-v
+		hasTriangle := false
+		for w := range adj[u] {
+			if w != v && adj[v][w] {
+				duw := math.Hypot(sNodes[u].x-sNodes[w].x, sNodes[u].y-sNodes[w].y)
+				dvw := math.Hypot(sNodes[v].x-sNodes[w].x, sNodes[v].y-sNodes[w].y)
+				if duw <= maxTriLen && dvw <= maxTriLen {
+					hasTriangle = true
+					break
+				}
+			}
+		}
+		if hasTriangle && len(adj[u]) > 2 && len(adj[v]) > 2 {
+			delete(adj[u], v)
+			delete(adj[v], u)
+			delete(keptSuperEdges, tc.sek)
+		}
+	}
+
+	// 5. Find nearest surviving super-node to start (0, 0)
+	startSuper := -1
+	bestD2 := math.Inf(1)
+	for sid := range adj {
+		if len(adj[sid]) == 0 {
+			continue
+		}
+		sn := sNodes[sid]
+		d2 := sn.x*sn.x + sn.y*sn.y
+		if d2 < bestD2 {
+			bestD2 = d2
+			startSuper = sid
+		}
+	}
+	if startSuper < 0 {
+		return nil, fmt.Errorf("no reachable trail nodes found near start coordinates")
+	}
+	snapDistM := math.Sqrt(bestD2)
+	if snapDistM > 2000.0 {
+		return nil, fmt.Errorf("nearest trail segment with >=%d runs is %.0fm away from start point (max snap 2000m)", minRuns, snapDistM)
+	}
+
+	// 6. Keep only connected component containing startSuper
+	reachable := make(map[int]bool)
+	queue := []int{startSuper}
+	reachable[startSuper] = true
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		for nb := range adj[cur] {
+			if !reachable[nb] {
+				reachable[nb] = true
+				queue = append(queue, nb)
+			}
+		}
+	}
+
+	// 7. Iteratively prune short dead-end spurs (< 200m) that don't contain startSuper
+	const maxPruneSpurM = 200.0
+	pruned := true
+	for pruned {
+		pruned = false
+		for sid := range reachable {
+			if sid == startSuper {
+				continue
+			}
+			// Count reachable neighbors
+			deg := 0
+			onlyNb := -1
+			for nb := range adj[sid] {
+				if reachable[nb] {
+					deg++
+					onlyNb = nb
+				}
+			}
+			if deg != 1 {
+				continue
+			}
+			// Walk back along this degree-1/2 dead-end spur to measure its total length
+			spurNodes := []int{sid}
+			spurLen := 0.0
+			prev := sid
+			curr := onlyNb
+			for curr != startSuper {
+				spurLen += math.Hypot(sNodes[prev].x-sNodes[curr].x, sNodes[prev].y-sNodes[curr].y)
+				if spurLen > maxPruneSpurM {
+					break
+				}
+				cDeg := 0
+				next := -1
+				for nb := range adj[curr] {
+					if reachable[nb] {
+						cDeg++
+						if nb != prev {
+							next = nb
+						}
+					}
+				}
+				if cDeg != 2 || next == -1 {
+					break
+				}
+				spurNodes = append(spurNodes, curr)
+				prev = curr
+				curr = next
+			}
+			if spurLen <= maxPruneSpurM {
+				for _, rm := range spurNodes {
+					delete(reachable, rm)
+					for nb := range adj[rm] {
+						delete(adj[nb], rm)
+					}
+					delete(adj, rm)
+				}
+				pruned = true
+			}
+		}
+	}
+
+	// 8. Contract degree-2 chains into clean GraphEdges with robust median relative elevation deltas
+	isJunction := make(map[int]bool)
+	isJunction[startSuper] = true
+	for sid := range reachable {
 		deg := 0
-		for _, nb := range rawAdj[k] {
+		for nb := range adj[sid] {
 			if reachable[nb] {
 				deg++
 			}
 		}
 		if deg != 2 {
-			isJunction[k] = true
+			isJunction[sid] = true
 		}
 	}
 
-	// Assign node IDs to junctions
-	cellToNode := make(map[gridKey]int, len(isJunction))
+	superToNode := make(map[int]int, len(isJunction))
 	var nodes []GraphNode
-
-	addNode := func(k gridKey) int {
-		if id, ok := cellToNode[k]; ok {
+	addNode := func(sid int) int {
+		if id, ok := superToNode[sid]; ok {
 			return id
 		}
-		acc := cells[k]
-		cx := acc.sumX / float64(acc.count)
-		cy := acc.sumY / float64(acc.count)
-		ele := 0.0
-		if acc.altCnt > 0 {
-			ele = acc.sumAlt / float64(acc.altCnt)
-		}
-		lat, lon := proj.toLatLon(cx, cy)
+		sn := sNodes[sid]
+		lat, lon := proj.toLatLon(sn.x, sn.y)
 		id := len(nodes)
-		cellToNode[k] = id
+		superToNode[sid] = id
 		nodes = append(nodes, GraphNode{
 			ID:  id,
 			Lat: lat,
 			Lon: lon,
-			Ele: ele,
-			X:   cx,
-			Y:   cy,
+			Ele: sn.alt,
+			X:   sn.x,
+			Y:   sn.y,
 		})
 		return id
 	}
 
-	startNodeID := addNode(startCell)
-	for k := range isJunction {
-		addNode(k)
+	startNodeID := addNode(startSuper)
+	for sid := range isJunction {
+		addNode(sid)
 	}
 
-	visitedEdge := make(map[gridEdgeKey]bool)
+	visitedEdge := make(map[superEdgeKey]bool)
 	var edges []GraphEdge
 
-	buildChainEdge := func(uCell, firstNext gridKey) {
-		ek0 := makeGridEdgeKey(uCell, firstNext)
-		if visitedEdge[ek0] {
+	getEdgeDelta := func(a, b int) (float64, int) {
+		sek, sameDir := makeSuperEdgeKey(a, b)
+		sed := keptSuperEdges[sek]
+		if sed == nil {
+			return 0, 0
+		}
+		med := medianFloat(sed.deltas)
+		if !sameDir {
+			med = -med
+		}
+		return med, sed.runCount
+	}
+
+	buildChain := func(uSuper, firstNext int) {
+		sek0, _ := makeSuperEdgeKey(uSuper, firstNext)
+		if visitedEdge[sek0] {
 			return
 		}
-		chain := []gridKey{uCell, firstNext}
-		visitedEdge[ek0] = true
-		minRuns := edgeRuns[ek0]
+		chain := []int{uSuper, firstNext}
+		visitedEdge[sek0] = true
 
-		prev := uCell
+		prev := uSuper
 		curr := firstNext
 		for !isJunction[curr] {
-			var next gridKey
-			found := false
-			for _, nb := range rawAdj[curr] {
-				if !reachable[nb] || nb == prev {
-					continue
+			next := -1
+			for nb := range adj[curr] {
+				if reachable[nb] && nb != prev {
+					next = nb
+					break
 				}
-				next = nb
-				found = true
+			}
+			if next == -1 {
 				break
 			}
-			if !found {
+			sek, _ := makeSuperEdgeKey(curr, next)
+			if visitedEdge[sek] {
 				break
 			}
-			ek := makeGridEdgeKey(curr, next)
-			if visitedEdge[ek] {
-				break
-			}
-			visitedEdge[ek] = true
-			if rc := edgeRuns[ek]; rc < minRuns {
-				minRuns = rc
-			}
+			visitedEdge[sek] = true
 			chain = append(chain, next)
 			prev = curr
 			curr = next
 		}
 
-		// Ensure endpoint is a node
-		uID := addNode(uCell)
+		uID := addNode(uSuper)
 		vID := addNode(curr)
 
-		// Compute polyline, length, and smoothed elevation gain in both directions
+		// Build polyline using robust median relative elevation deltas along the chain
 		pts := make([][3]float64, len(chain))
-		rawAlts := make([]float64, len(chain))
+		relAlts := make([]float64, len(chain))
 		length := 0.0
-		var prevX, prevY float64
-		for i, ck := range chain {
-			acc := cells[ck]
-			cx := acc.sumX / float64(acc.count)
-			cy := acc.sumY / float64(acc.count)
-			ele := 0.0
-			if acc.altCnt > 0 {
-				ele = acc.sumAlt / float64(acc.altCnt)
-			}
-			lat, lon := proj.toLatLon(cx, cy)
-			pts[i] = [3]float64{lat, lon, ele}
-			rawAlts[i] = ele
+		minRC := math.MaxInt32
+		baseEle := sNodes[chain[0]].alt
+		relAlts[0] = 0
+
+		for i, sid := range chain {
+			sn := sNodes[sid]
+			lat, lon := proj.toLatLon(sn.x, sn.y)
 			if i > 0 {
-				length += math.Hypot(cx-prevX, cy-prevY)
+				prevSN := sNodes[chain[i-1]]
+				segLen := math.Hypot(sn.x-prevSN.x, sn.y-prevSN.y)
+				length += segLen
+				medGrade, rc := getEdgeDelta(chain[i-1], sid)
+				if rc > 0 && rc < minRC {
+					minRC = rc
+				}
+				// Clamp median grade to plausible range (<= 40%) and scale by super-edge length
+				if medGrade > 0.40 {
+					medGrade = 0.40
+				} else if medGrade < -0.40 {
+					medGrade = -0.40
+				}
+				dEle := medGrade * segLen
+				relAlts[i] = relAlts[i-1] + dEle
 			}
-			prevX, prevY = cx, cy
+			pts[i] = [3]float64{lat, lon, baseEle + relAlts[i]}
+		}
+		if minRC == math.MaxInt32 {
+			minRC = minRuns
 		}
 
-		// Smooth altitudes slightly to suppress GPS elevation noise
-		smoothed := smoothAltitudes(rawAlts)
-		for i := range pts {
-			pts[i][2] = smoothed[i]
-		}
-		gainUV, gainVU := computeDirectionalGain(smoothed, 1.5)
+		// Compute directional elevation gain with a 3.0m hysteresis threshold
+		gainUV, gainVU := computeDirectionalGain(relAlts, 3.0)
+
+		// Compute unit leaving/arriving direction vectors for anti-U-turn filtering
+		startDirX, startDirY := computeChainDir(sNodes, chain, true)
+		endDirX, endDirY := computeChainDir(sNodes, chain, false)
+
+		// Compute interior 45m spatial corridor cells (excluding 45m near endpoints U and V)
+		corridor := computeCorridorCells(sNodes, chain, 45.0)
 
 		edgeID := len(edges)
 		edges = append(edges, GraphEdge{
-			ID:       edgeID,
-			U:        uID,
-			V:        vID,
-			Length:   length,
-			GainUV:   gainUV,
-			GainVU:   gainVU,
-			RunCount: minRuns,
-			Points:   pts,
+			ID:            edgeID,
+			U:             uID,
+			V:             vID,
+			Length:        length,
+			GainUV:        gainUV,
+			GainVU:        gainVU,
+			NetDeltaUV:    relAlts[len(relAlts)-1],
+			RunCount:      minRC,
+			Points:        pts,
+			StartDirX:     startDirX,
+			StartDirY:     startDirY,
+			EndDirX:       endDirX,
+			EndDirY:       endDirY,
+			CorridorCells: corridor,
 		})
 		nodes[uID].Edges = append(nodes[uID].Edges, edgeID)
 		if vID != uID {
@@ -834,13 +1231,15 @@ func contractGridToGraph(
 		}
 	}
 
-	// Trace chains starting from every junction
-	for k := range isJunction {
-		for _, nb := range rawAdj[k] {
-			if !reachable[nb] {
-				continue
+	// Trace chains from every junction
+	for sid := range isJunction {
+		if !reachable[sid] {
+			continue
+		}
+		for nb := range adj[sid] {
+			if reachable[nb] {
+				buildChain(sid, nb)
 			}
-			buildChainEdge(k, nb)
 		}
 	}
 
@@ -851,22 +1250,73 @@ func contractGridToGraph(
 		SnapDistanceM: snapDistM,
 		Nodes:         nodes,
 		Edges:         edges,
-	}
+	}, nil
 }
 
-// smoothAltitudes applies a 3-point weighted moving average [0.25, 0.5, 0.25] keeping endpoints fixed.
-func smoothAltitudes(alts []float64) []float64 {
-	n := len(alts)
-	if n <= 2 {
-		out := make([]float64, n)
-		copy(out, alts)
-		return out
+// computeChainDir computes a smoothed unit direction vector near the start (fromStart=true)
+// or end (fromStart=false) of a super-node chain.
+func computeChainDir(sNodes []*superNode, chain []int, fromStart bool) (float64, float64) {
+	n := len(chain)
+	if n < 2 {
+		return 0, 0
 	}
-	out := make([]float64, n)
-	out[0] = alts[0]
-	out[n-1] = alts[n-1]
-	for i := 1; i < n-1; i++ {
-		out[i] = 0.25*alts[i-1] + 0.5*alts[i] + 0.25*alts[i+1]
+	var dx, dy float64
+	if fromStart {
+		// Look up to 3 hops ahead (or ~80m) from chain[0] for a stable leaving bearing
+		u := sNodes[chain[0]]
+		targetIdx := 1
+		for i := 1; i < n && i <= 3; i++ {
+			targetIdx = i
+			if math.Hypot(sNodes[chain[i]].x-u.x, sNodes[chain[i]].y-u.y) >= 70.0 {
+				break
+			}
+		}
+		dx = sNodes[chain[targetIdx]].x - u.x
+		dy = sNodes[chain[targetIdx]].y - u.y
+	} else {
+		// Look up to 3 hops back from chain[n-1] for a stable arriving bearing
+		v := sNodes[chain[n-1]]
+		srcIdx := n - 2
+		for i := n - 2; i >= 0 && i >= n-4; i-- {
+			srcIdx = i
+			if math.Hypot(v.x-sNodes[chain[i]].x, v.y-sNodes[chain[i]].y) >= 70.0 {
+				break
+			}
+		}
+		dx = v.x - sNodes[chain[srcIdx]].x
+		dy = v.y - sNodes[chain[srcIdx]].y
+	}
+	mag := math.Hypot(dx, dy)
+	if mag < 1e-6 {
+		return 0, 0
+	}
+	return dx / mag, dy / mag
+}
+
+// computeCorridorCells returns deduplicated interior spatial cells (at cellSize meters)
+// along a chain, excluding endpoints within cellSize of U and V so trails meeting at a
+// junction don't falsely register as overlapping.
+func computeCorridorCells(sNodes []*superNode, chain []int, cellSize float64) []gridKey {
+	if len(chain) < 3 {
+		return nil
+	}
+	u := sNodes[chain[0]]
+	v := sNodes[chain[len(chain)-1]]
+	seen := make(map[gridKey]struct{}, len(chain))
+	var out []gridKey
+	for i := 1; i < len(chain)-1; i++ {
+		sn := sNodes[chain[i]]
+		if math.Hypot(sn.x-u.x, sn.y-u.y) < cellSize || math.Hypot(sn.x-v.x, sn.y-v.y) < cellSize {
+			continue
+		}
+		gk := gridKey{
+			gx: int32(math.Floor(sn.x / cellSize)),
+			gy: int32(math.Floor(sn.y / cellSize)),
+		}
+		if _, ok := seen[gk]; !ok {
+			seen[gk] = struct{}{}
+			out = append(out, gk)
+		}
 	}
 	return out
 }
@@ -889,7 +1339,6 @@ func computeDirectionalGain(alts []float64, threshold float64) (float64, float64
 				ref = seq[i]
 			}
 		}
-		// Account for any net positive gain at the final endpoint if not yet flushed
 		if seq[len(seq)-1] > ref {
 			gain += seq[len(seq)-1] - ref
 		}
@@ -906,8 +1355,8 @@ func computeDirectionalGain(alts []float64, threshold float64) (float64, float64
 	return gainUV, gainVU
 }
 
-// DetectFrequentStarts scans cached activities in ActivityStore (or disk) and returns
-// the top starting locations clustered within ~250m so the UI can offer quick-pick start points.
+// DetectFrequentStarts scans activities and returns the top starting locations clustered
+// within ~250m so the UI can offer quick-pick start points.
 func DetectFrequentStarts(dataDir string, limit int) []StartCluster {
 	if limit <= 0 {
 		limit = 5
@@ -918,17 +1367,12 @@ func DetectFrequentStarts(dataDir string, limit int) []StartCluster {
 		return nil
 	}
 
-	type startRec struct {
-		lat, lon float64
-		name     string
-	}
 	type cluster struct {
 		sumLat, sumLon float64
 		count          int
 		sampleName     string
 	}
 
-	// Quick lightweight struct that only reads start_latlng (no streams!) so this is very fast
 	type startOnlyFile struct {
 		Name        string    `json:"name"`
 		Type        string    `json:"type"`

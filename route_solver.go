@@ -37,7 +37,7 @@ type RouteResult struct {
 	VertPerKm        float64         `json:"vert_per_km"`
 	OverlapM         float64         `json:"overlap_m"`
 	OverlapPct       float64         `json:"overlap_pct"`
-	DistinctLabel    string          `json:"distinct_label"` // e.g. "Primary", "Distinct", "Variant"
+	DistinctLabel    string          `json:"distinct_label"` // e.g. "Top Vert", "Distinct", "Variant"
 	MaxSimilarityPct float64         `json:"max_similarity_pct"`
 	RepeatInfo       *RepeatLoopInfo `json:"repeat_info,omitempty"`
 	Coordinates      [][2]float64    `json:"coordinates"`       // [lat, lon] downsampled for map
@@ -86,7 +86,6 @@ func dijkstraDistances(g *TrailGraph, source int) ([]float64, []int, []int) {
 	dist[source] = 0
 
 	visited := make([]bool, n)
-	// Simple O(V^2) or min-heap; since V is typically 50..1000, a binary heap is clean & fast.
 	type heapItem struct {
 		node int
 		d    float64
@@ -177,7 +176,6 @@ func reconstructShortestPath(g *TrailGraph, source, target int, prevNode, prevEd
 		})
 		curr = p
 	}
-	// reverse in place
 	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
 		rev[i], rev[j] = rev[j], rev[i]
 	}
@@ -228,43 +226,80 @@ func dijkstraWithPenalty(g *TrailGraph, source, target int, avoidEdges map[int]b
 	return reconstructShortestPath(g, source, target, prevNode, prevEdge)
 }
 
-// halfPath is a path starting from an anchor node used in meet-in-the-middle loop assembly.
+// halfPath is a clean simple path starting from an anchor node used in meet-in-the-middle loop assembly.
 type halfPath struct {
-	steps       []RouteStep
-	endNode     int
-	length      float64
-	gainForward float64
-	gainReverse float64
-	overlap     float64
-	edgeCounts  map[int]int
+	steps         []RouteStep
+	endNode       int
+	length        float64
+	gainForward   float64
+	gainReverse   float64
+	edgeCounts    map[int]int
+	visitedNodes  map[int]bool // intermediate nodes (excluding anchor & endNode)
+	corridorCells map[gridKey]struct{}
 }
 
-// evalLoopCandidate evaluates a closed sequence of steps for exact length, elevation gain/loss, and overlap.
+// evalLoopCandidate evaluates a closed sequence of steps for exact length, smoothed elevation
+// gain/loss (from the continuous relative elevation profile), and both edge + spatial corridor overlap.
 func evalLoopCandidate(g *TrailGraph, steps []RouteStep, repeatInfo *RepeatLoopInfo, exemptOverlapEdges map[int]int) *candidateRoute {
 	if len(steps) == 0 {
 		return nil
 	}
 	length := 0.0
-	gain := 0.0
-	loss := 0.0
 	counts := make(map[int]int, len(steps))
 	edgeSet := make(map[int]float64, len(steps))
+
+	// Build continuous relative elevation sequence along the entire loop
+	relAlts := make([]float64, 0, len(steps)*4+1)
+	curEle := 0.0
+	relAlts = append(relAlts, curEle)
+
+	// Track spatial corridor cells occupied by distinct edges to catch parallel out-and-backs
+	corridorOwner := make(map[gridKey]int, len(steps)*3)
+	spatialOverlapM := 0.0
+	const corridorCellM = 45.0
 
 	for _, st := range steps {
 		e := &g.Edges[st.EdgeID]
 		length += e.Length
-		if st.Forward {
-			gain += e.GainUV
-			loss += e.GainVU
-		} else {
-			gain += e.GainVU
-			loss += e.GainUV
-		}
 		counts[st.EdgeID]++
 		edgeSet[st.EdgeID] = e.Length
+
+		// Append relative elevation profile of this edge
+		nPts := len(e.Points)
+		if nPts >= 2 {
+			if st.Forward {
+				base := e.Points[0][2]
+				for i := 1; i < nPts; i++ {
+					relAlts = append(relAlts, curEle+(e.Points[i][2]-base))
+				}
+				curEle += e.NetDeltaUV
+			} else {
+				base := e.Points[nPts-1][2]
+				for i := nPts - 2; i >= 0; i-- {
+					relAlts = append(relAlts, curEle+(e.Points[i][2]-base))
+				}
+				curEle -= e.NetDeltaUV
+			}
+		}
+
+		// Spatial corridor overlap check: only count when a *different* edge enters an already-used cell
+		// (same-edge repeats are accounted for by exact edge counts below).
+		if counts[st.EdgeID] == 1 {
+			for _, ck := range e.CorridorCells {
+				if owner, exists := corridorOwner[ck]; exists && owner != st.EdgeID {
+					// Don't double-penalize edges inside an explicitly exempted repeating loop
+					if exemptOverlapEdges == nil || exemptOverlapEdges[st.EdgeID] <= 1 {
+						spatialOverlapM += corridorCellM
+					}
+				} else {
+					corridorOwner[ck] = st.EdgeID
+				}
+			}
+		}
 	}
 
-	overlap := 0.0
+	// Exact undirected edge-ID overlap
+	edgeOverlapM := 0.0
 	for eid, cnt := range counts {
 		allowed := 1
 		if exemptOverlapEdges != nil {
@@ -273,16 +308,24 @@ func evalLoopCandidate(g *TrailGraph, steps []RouteStep, repeatInfo *RepeatLoopI
 			}
 		}
 		if cnt > allowed {
-			overlap += float64(cnt-allowed) * g.Edges[eid].Length
+			edgeOverlapM += float64(cnt-allowed) * g.Edges[eid].Length
 		}
 	}
+
+	totalOverlap := edgeOverlapM + spatialOverlapM
+	if totalOverlap > length {
+		totalOverlap = length
+	}
+
+	// Compute clean elevation gain/loss along the continuous loop profile with 3.0m hysteresis
+	gain, loss := computeDirectionalGain(relAlts, 3.0)
 
 	return &candidateRoute{
 		steps:      steps,
 		length:     length,
 		gain:       gain,
 		loss:       loss,
-		overlap:    overlap,
+		overlap:    totalOverlap,
 		repeatInfo: repeatInfo,
 		edgeSet:    edgeSet,
 	}
@@ -303,6 +346,25 @@ func reverseSteps(steps []RouteStep) []RouteStep {
 	return rev
 }
 
+// isSharpUTurn returns true if transitioning from lastEdge (arriving at u) to nextEdge (leaving u)
+// reverses direction sharply (> ~145 degrees).
+func isSharpUTurn(g *TrailGraph, u, lastEdgeID, nextEdgeID int) bool {
+	if lastEdgeID < 0 {
+		return false
+	}
+	if lastEdgeID == nextEdgeID {
+		return true
+	}
+	ax, ay := g.Edges[lastEdgeID].ArriveDir(u)
+	lx, ly := g.Edges[nextEdgeID].LeaveDir(u)
+	if (ax == 0 && ay == 0) || (lx == 0 && ly == 0) {
+		return false
+	}
+	// dot product near -1 means heading straight back where we came from
+	dot := ax*lx + ay*ly
+	return dot < -0.82
+}
+
 // FindTopRoutes runs the anytime multi-strategy route optimizer on TrailGraph.
 func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, progressFn func(string)) (*RouteSearchOutput, error) {
 	startTime := time.Now()
@@ -319,7 +381,6 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 
 	distToStart, _, _ := dijkstraDistances(g, g.StartNode)
 
-	// Bound search time
 	timeout := time.Duration(req.TimeoutSec) * time.Second
 	searchCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -330,13 +391,13 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 	}
 
 	if progressFn != nil {
-		progressFn(fmt.Sprintf("Searching for top %d routes (%.1f ± %.1f km, max %.0f%% overlap)...",
+		progressFn(fmt.Sprintf("Searching for top %d clean loops (%.1f ± %.1f km, max %.0f%% overlap)...",
 			req.MaxResults, req.TargetDistanceKm, req.ToleranceKm, req.MaxOverlapPct))
 	}
 
 	var mu sync.Mutex
 	var allCandidates []*candidateRoute
-	edgeHeat := make([]float64, len(g.Edges)) // tracks heavily-used edges to diversify later passes
+	edgeHeat := make([]float64, len(g.Edges))
 
 	addCandidate := func(c *candidateRoute) {
 		if c == nil {
@@ -350,18 +411,15 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 		}
 		mu.Lock()
 		allCandidates = append(allCandidates, c)
-		// Gently increase heat on edges of high-scoring routes to encourage diversity
-		if len(allCandidates) <= 2000 {
+		if len(allCandidates) <= 2500 {
 			for eid := range c.edgeSet {
-				edgeHeat[eid] += 0.05
+				edgeHeat[eid] += 0.04
 			}
 		}
 		mu.Unlock()
 	}
 
-	// Strategy 1 & 2: Parallel Meet-in-the-Middle + Guided Randomized Walks
 	var wg sync.WaitGroup
-	// Reserve ~25% of timeout for repeating loop composition if enabled
 	mainBudget := timeout
 	if req.AllowRepeatLoops {
 		mainBudget = (timeout * 3) / 4
@@ -375,11 +433,9 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 			defer wg.Done()
 			rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerID)*7919))
 
-			// Phase A: Meet-in-the-Middle rounds with varying exploration/diversity penalties
 			round := 0
 			for mainCtx.Err() == nil {
 				round++
-				// Snapshot edge penalties for diversity on rounds >= 2
 				var penalties []float64
 				if round >= 2 {
 					penalties = make([]float64, len(g.Edges))
@@ -388,13 +444,12 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 					mu.Unlock()
 				}
 
-				// Run a batch of meet-in-the-middle half-paths
-				runMeetInTheMiddleBatch(mainCtx, g, g.StartNode, distToStart, minDistM, maxDistM, maxOverlapFrac, penalties, rng, 180, addCandidate)
+				// Phase A: Compass-swept Meet-in-the-Middle (primary clean loop generator)
+				runMeetInTheMiddleBatch(mainCtx, g, g.StartNode, distToStart, minDistM, maxDistM, maxOverlapFrac, penalties, rng, 200, addCandidate)
 
-				// Run a batch of guided full-loop walks
-				runGuidedWalkBatch(mainCtx, g, g.StartNode, distToStart, minDistM, maxDistM, maxOverlapFrac, penalties, rng, 200, addCandidate)
+				// Phase B: Smooth node-simple guided loop walks
+				runGuidedWalkBatch(mainCtx, g, g.StartNode, distToStart, minDistM, maxDistM, maxOverlapFrac, penalties, rng, 180, addCandidate)
 
-				// Cap total rounds if graph is small and we've already explored thoroughly
 				if round >= 25 && len(g.Nodes) < 80 {
 					break
 				}
@@ -403,7 +458,7 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 	}
 	wg.Wait()
 
-	// Strategy 3: Repeating high-elevation loops (when enabled)
+	// Phase C: Repeating high-elevation loops (when enabled)
 	if req.AllowRepeatLoops && searchCtx.Err() == nil {
 		if progressFn != nil {
 			progressFn(fmt.Sprintf("Exploring repeating loops with >= %.0fm elevation gain...", req.MinLoopGainM))
@@ -420,10 +475,8 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 			req.TargetDistanceKm, req.ToleranceKm, req.MaxOverlapPct)
 	}
 
-	// Select Top N routes ensuring at least 3 are mostly distinct
 	selected := selectDiverseTopRoutes(allCandidates, req.MaxResults)
 
-	// Convert selected candidates into full RouteResult structs with coordinates & elevation profiles
 	results := make([]RouteResult, len(selected))
 	for i, sel := range selected {
 		results[i] = buildRouteResult(g, sel.cand, i+1, sel.label, sel.maxSimPct)
@@ -439,7 +492,7 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 		SnapDistanceM:   math.Round(g.SnapDistanceM*10) / 10,
 		CandidatesFound: len(allCandidates),
 		ElapsedMs:       time.Since(startTime).Milliseconds(),
-		NetworkOverlay:  g.ExportNetworkOverlay(600),
+		NetworkOverlay:  g.ExportNetworkOverlay(800),
 	}
 
 	if progressFn != nil {
@@ -450,7 +503,8 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 	return out, nil
 }
 
-// runMeetInTheMiddleBatch generates outward paths from anchor and pairs paths meeting at the same junction.
+// runMeetInTheMiddleBatch generates clean, node-simple outward paths fanned across compass
+// bearings and pairs non-overlapping paths meeting at the same junction to form smooth loops.
 func runMeetInTheMiddleBatch(
 	ctx context.Context,
 	g *TrailGraph,
@@ -464,97 +518,135 @@ func runMeetInTheMiddleBatch(
 ) {
 	halfMin := minDistM * 0.20
 	halfMax := maxDistM * 0.65
-	maxOverlapDist := maxOverlapFrac * maxDistM
+	maxSteps := int(math.Max(400, maxDistM/20.0))
+	anchorX, anchorY := g.Nodes[anchor].X, g.Nodes[anchor].Y
 
-	// Map endpoint node -> slice of best/diverse halfPaths reaching that node
 	byEnd := make(map[int][]*halfPath)
-	const maxPerNode = 10
+	const maxPerNode = 12
 
 	for w := 0; w < numWalks; w++ {
 		if ctx.Err() != nil {
 			return
 		}
-		// Vary temperature across walks: some greedy for vert, some exploratory
-		temp := 0.25 + rng.Float64()*2.0
+		temp := 0.30 + rng.Float64()*1.4
 		divWeight := 0.0
 		if edgePenalty != nil && w%3 != 0 {
-			divWeight = 0.3 + rng.Float64()*1.5
+			divWeight = 0.35 + rng.Float64()*1.4
 		}
+		// Assign a target compass bearing so walks sweep cleanly outward in all directions
+		targetAngle := (float64(w%16) / 16.0) * 2.0 * math.Pi
+		dirX, dirY := math.Cos(targetAngle), math.Sin(targetAngle)
+		useCompass := (w % 4) != 0
 
 		u := anchor
 		curDist := 0.0
 		curGainFwd := 0.0
 		curGainRev := 0.0
-		curOverlap := 0.0
 		lastEdge := -1
 		edgeCounts := make(map[int]int, 32)
+		visited := make(map[int]bool, 32)
+		visited[anchor] = true
+		corridor := make(map[gridKey]struct{}, 48)
 		var steps []RouteStep
 
-		maxSteps := 120
 		for step := 0; step < maxSteps; step++ {
 			edges := g.Nodes[u].Edges
 			if len(edges) == 0 {
 				break
 			}
 
-			// Score valid next edges
 			type choice struct {
 				eid   int
 				v     int
 				score float64
-				ovAdd float64
 			}
 			var choices []choice
+
 			for _, eid := range edges {
-				// Avoid immediate U-turn unless dead-end
-				if eid == lastEdge && len(edges) > 1 {
+				if eid == lastEdge {
 					continue
 				}
 				e := &g.Edges[eid]
 				v := e.Other(u)
+
+				// Strict node-simple path (only allow returning to anchor if it closes a valid loop!)
+				if v == anchor {
+					if curDist+e.Length < minDistM || curDist+e.Length > maxDistM {
+						continue
+					}
+				} else if visited[v] {
+					continue
+				}
+
+				if edgeCounts[eid] > 0 {
+					continue
+				}
+				// Reject sharp U-turns at junctions
+				if isSharpUTurn(g, u, lastEdge, eid) {
+					continue
+				}
+
 				newDist := curDist + e.Length
-				if newDist > halfMax {
+				if v != anchor && newDist > halfMax {
 					continue
 				}
 				if newDist+distToAnchor[v] > maxDistM {
 					continue
 				}
-				ovAdd := 0.0
-				if edgeCounts[eid] >= 1 {
-					ovAdd = e.Length
+
+				// Reject edges whose interior corridor already overlaps this half-path
+				corridorHits := 0
+				for _, ck := range e.CorridorCells {
+					if _, exists := corridor[ck]; exists {
+						corridorHits++
+					}
 				}
-				if curOverlap+ovAdd > maxOverlapDist {
+				if corridorHits > 1 {
 					continue
 				}
 
-				// Elevation gain score (consider both directions since half-path may be used forward or reverse)
+				// Elevation gain score (capped gain rate so no single steep glitch dominates)
 				fwdGain := e.GainFrom(u)
 				revGain := e.GainFrom(v)
-				gainRate := (fwdGain + 0.5*revGain) / math.Max(e.Length, 20.0)
-				score := 1.0 + gainRate*35.0
+				gainRate := math.Min(0.35, (fwdGain+0.5*revGain)/math.Max(e.Length, 30.0))
+				score := 1.0 + gainRate*30.0
 
-				// Favor fresh edges strongly
-				if ovAdd > 0 {
-					score *= 0.15
+				// Favor smooth forward continuation (small turn angle)
+				if lastEdge >= 0 {
+					ax, ay := g.Edges[lastEdge].ArriveDir(u)
+					lx, ly := e.LeaveDir(u)
+					dot := ax*lx + ay*ly
+					score *= (1.0 + 0.4*math.Max(0, dot))
 				}
+
+				// Compass-sector outward sweep bias
+				if useCompass && v != anchor {
+					vx := g.Nodes[v].X - anchorX
+					vy := g.Nodes[v].Y - anchorY
+					vmag := math.Hypot(vx, vy)
+					if vmag > 10 {
+						align := (vx*dirX + vy*dirY) / vmag
+						score *= (1.0 + 0.6*math.Max(0, align))
+					}
+				}
+
 				// Favor moving outward early
 				if distToAnchor[v] > distToAnchor[u] {
 					score *= 1.25
 				}
-				// Apply diversity penalty from previous rounds
+
 				if divWeight > 0 && edgePenalty[eid] > 0 {
 					score /= (1.0 + divWeight*edgePenalty[eid])
 				}
 
-				choices = append(choices, choice{eid: eid, v: v, score: score, ovAdd: ovAdd})
+				choices = append(choices, choice{eid: eid, v: v, score: score})
 			}
 
 			if len(choices) == 0 {
 				break
 			}
 
-			// Softmax / power-weighted random choice
-			picked := pickWeightedChoice(choices[0].score, len(choices), func(i int) float64 {
+			picked := pickWeightedChoice(len(choices), func(i int) float64 {
 				return math.Pow(math.Max(choices[i].score, 1e-4), 1.0/temp)
 			}, rng)
 
@@ -575,20 +667,21 @@ func runMeetInTheMiddleBatch(
 				curGainFwd += e.GainVU
 				curGainRev += e.GainUV
 			}
-			curOverlap += ch.ovAdd
 			edgeCounts[ch.eid]++
+			for _, ck := range e.CorridorCells {
+				corridor[ck] = struct{}{}
+			}
 			lastEdge = ch.eid
 			u = ch.v
 
-			// If we happened to loop right back to anchor within target distance, emit directly!
 			if u == anchor && curDist >= minDistM && curDist <= maxDistM {
 				stCopy := make([]RouteStep, len(steps))
 				copy(stCopy, steps)
 				emit(evalLoopCandidate(g, stCopy, nil, nil))
 				break
 			}
+			visited[u] = true
 
-			// Record half-path snapshot at valid junctions
 			if u != anchor && curDist >= halfMin && curDist <= halfMax {
 				list := byEnd[u]
 				if len(list) < maxPerNode {
@@ -598,14 +691,25 @@ func runMeetInTheMiddleBatch(
 					for k, v := range edgeCounts {
 						ecCopy[k] = v
 					}
+					visCopy := make(map[int]bool, len(visited))
+					for k := range visited {
+						if k != anchor && k != u {
+							visCopy[k] = true
+						}
+					}
+					corrCopy := make(map[gridKey]struct{}, len(corridor))
+					for k := range corridor {
+						corrCopy[k] = struct{}{}
+					}
 					byEnd[u] = append(list, &halfPath{
-						steps:       stCopy,
-						endNode:     u,
-						length:      curDist,
-						gainForward: curGainFwd,
-						gainReverse: curGainRev,
-						overlap:     curOverlap,
-						edgeCounts:  ecCopy,
+						steps:         stCopy,
+						endNode:       u,
+						length:        curDist,
+						gainForward:   curGainFwd,
+						gainReverse:   curGainRev,
+						edgeCounts:    ecCopy,
+						visitedNodes:  visCopy,
+						corridorCells: corrCopy,
 					})
 				}
 			}
@@ -628,28 +732,47 @@ func runMeetInTheMiddleBatch(
 				if totalLen < minDistM || totalLen > maxDistM {
 					continue
 				}
-				// Quick overlap check between p1 and p2
-				ov := p1.overlap + p2.overlap
-				if ov > maxOverlapFrac*totalLen {
+
+				// Check junction U-turn at meeting node u (joining p1 -> rev(p2))
+				last1 := p1.steps[len(p1.steps)-1].EdgeID
+				last2 := p2.steps[len(p2.steps)-1].EdgeID
+				if last1 == last2 {
 					continue
 				}
-				for eid, c1 := range p1.edgeCounts {
-					if c2, ok := p2.edgeCounts[eid]; ok {
-						// Combined count is c1 + c2; overlap already counted (c1-1) + (c2-1),
-						// so merging adds 1 more overlapping traversal of eid!
-						_ = c1
-						_ = c2
+				if isSharpUTurn(g, p1.endNode, last1, last2) {
+					continue
+				}
+
+				// Quick exact edge + spatial corridor overlap filter
+				ov := 0.0
+				maxOv := maxOverlapFrac * totalLen
+				for eid := range p1.edgeCounts {
+					if _, ok := p2.edgeCounts[eid]; ok {
 						ov += g.Edges[eid].Length
-						if ov > maxOverlapFrac*totalLen+1e-6 {
+						if ov > maxOv+1e-6 {
 							break
 						}
 					}
 				}
-				if ov > maxOverlapFrac*totalLen+1e-6 {
+				if ov > maxOv+1e-6 {
 					continue
 				}
 
-				// Choose the direction (p1 + rev(p2) vs p2 + rev(p1)) with higher elevation gain
+				// Disallow heavy intermediate node sharing (keeps loops clean and non-figure-8)
+				sharedMidNodes := 0
+				for nID := range p1.visitedNodes {
+					if p2.visitedNodes[nID] {
+						sharedMidNodes++
+						if sharedMidNodes > 2 {
+							break
+						}
+					}
+				}
+				if sharedMidNodes > 2 {
+					continue
+				}
+
+				// Evaluate both directions and emit the higher-gain one
 				gain12 := p1.gainForward + p2.gainReverse
 				gain21 := p2.gainForward + p1.gainReverse
 				var combined []RouteStep
@@ -668,7 +791,7 @@ func runMeetInTheMiddleBatch(
 	}
 }
 
-// runGuidedWalkBatch performs full-loop walks that climb outward and then smoothly steer back home.
+// runGuidedWalkBatch performs clean node-simple full-loop walks that sweep outward and steer back home.
 func runGuidedWalkBatch(
 	ctx context.Context,
 	g *TrailGraph,
@@ -682,12 +805,13 @@ func runGuidedWalkBatch(
 ) {
 	targetDist := (minDistM + maxDistM) / 2.0
 	maxOverlapDist := maxOverlapFrac * maxDistM
+	maxSteps := int(math.Max(400, maxDistM/20.0))
 
 	for w := 0; w < numWalks; w++ {
 		if ctx.Err() != nil {
 			return
 		}
-		temp := 0.3 + rng.Float64()*1.5
+		temp := 0.3 + rng.Float64()*1.3
 		divWeight := 0.0
 		if edgePenalty != nil && w%2 == 0 {
 			divWeight = 0.4 + rng.Float64()*1.2
@@ -698,9 +822,12 @@ func runGuidedWalkBatch(
 		curOverlap := 0.0
 		lastEdge := -1
 		edgeCounts := make(map[int]int, 48)
+		visited := make(map[int]bool, 48)
+		visited[anchor] = true
+		corridor := make(map[gridKey]struct{}, 64)
 		var steps []RouteStep
 
-		for step := 0; step < 220; step++ {
+		for step := 0; step < maxSteps; step++ {
 			edges := g.Nodes[u].Edges
 			if len(edges) == 0 {
 				break
@@ -716,43 +843,70 @@ func runGuidedWalkBatch(
 			progress := curDist / targetDist
 
 			for _, eid := range edges {
-				if eid == lastEdge && len(edges) > 1 {
+				if eid == lastEdge {
 					continue
 				}
 				e := &g.Edges[eid]
 				v := e.Other(u)
+
+				if v == anchor {
+					if curDist+e.Length < minDistM || curDist+e.Length > maxDistM {
+						continue
+					}
+				} else if visited[v] {
+					// Only allow revisiting a node right near home (short cul-de-sac stem) if within overlap budget
+					if distToAnchor[v] > maxOverlapDist {
+						continue
+					}
+				}
+
+				if isSharpUTurn(g, u, lastEdge, eid) {
+					continue
+				}
+
 				newDist := curDist + e.Length
 				if newDist+distToAnchor[v] > maxDistM {
 					continue
 				}
+
 				ovAdd := 0.0
 				if edgeCounts[eid] >= 1 {
 					ovAdd = e.Length
+				} else {
+					for _, ck := range e.CorridorCells {
+						if _, exists := corridor[ck]; exists {
+							ovAdd += 45.0
+						}
+					}
 				}
 				if curOverlap+ovAdd > maxOverlapDist {
 					continue
 				}
 
-				gainRate := e.GainFrom(u) / math.Max(e.Length, 20.0)
-				score := 1.0 + gainRate*40.0
+				gainRate := math.Min(0.35, e.GainFrom(u)/math.Max(e.Length, 30.0))
+				score := 1.0 + gainRate*35.0
 
 				if ovAdd > 0 {
-					score *= 0.1
+					score *= 0.08
 				}
 
-				// Phase guidance: explore outward early, steer home past 60% of target distance
+				// Smooth forward continuation bonus
+				if lastEdge >= 0 {
+					ax, ay := g.Edges[lastEdge].ArriveDir(u)
+					lx, ly := e.LeaveDir(u)
+					dot := ax*lx + ay*ly
+					score *= (1.0 + 0.4*math.Max(0, dot))
+				}
+
 				if progress < 0.55 {
 					if distToAnchor[v] > distToAnchor[u] {
 						score *= 1.3
 					}
-					if v == anchor && newDist < minDistM {
-						score *= 0.05 // don't return home too early
-					}
 				} else {
 					if v == anchor && newDist >= minDistM && newDist <= maxDistM {
-						score *= 12.0 // strongly prefer closing a valid loop!
+						score *= 15.0
 					} else if distToAnchor[v] < distToAnchor[u] {
-						score *= 2.0 + (progress-0.55)*4.0
+						score *= 2.2 + (progress-0.55)*4.5
 					}
 				}
 
@@ -767,7 +921,7 @@ func runGuidedWalkBatch(
 				break
 			}
 
-			picked := pickWeightedChoice(choices[0].score, len(choices), func(i int) float64 {
+			picked := pickWeightedChoice(len(choices), func(i int) float64 {
 				return math.Pow(math.Max(choices[i].score, 1e-4), 1.0/temp)
 			}, rng)
 
@@ -782,6 +936,9 @@ func runGuidedWalkBatch(
 			curDist += e.Length
 			curOverlap += ch.ovAdd
 			edgeCounts[ch.eid]++
+			for _, ck := range e.CorridorCells {
+				corridor[ck] = struct{}{}
+			}
 			lastEdge = ch.eid
 			u = ch.v
 
@@ -789,6 +946,7 @@ func runGuidedWalkBatch(
 				emit(evalLoopCandidate(g, steps, nil, nil))
 				break
 			}
+			visited[u] = true
 		}
 	}
 }
@@ -804,7 +962,6 @@ func runRepeatingLoopSearch(
 ) {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano() + 31337))
 
-	// Select anchor junctions: always include StartNode, plus top high-degree / high-vert junctions reachable from StartNode
 	type anchorScore struct {
 		node  int
 		score float64
@@ -821,7 +978,6 @@ func runRepeatingLoopSearch(
 		if len(g.Nodes[i].Edges) < 2 {
 			continue
 		}
-		// Score by local elevation gain of incident edges
 		localGain := 0.0
 		for _, eid := range g.Nodes[i].Edges {
 			e := &g.Edges[eid]
@@ -839,7 +995,6 @@ func runRepeatingLoopSearch(
 		anchorList = append(anchorList, a.node)
 	}
 
-	// Precompute shortest paths from StartNode for stems
 	_, prevNodeFromStart, prevEdgeFromStart := dijkstraDistances(g, g.StartNode)
 
 	for _, anchor := range anchorList {
@@ -847,7 +1002,6 @@ func runRepeatingLoopSearch(
 			return
 		}
 		stemDist := distToStart[anchor]
-		// Max single-lap length for at least 2 laps: (maxDistM - 2*stemDist) / 2
 		maxSingleLap := (maxDistM - 2*stemDist) / 2.0
 		if maxSingleLap < 1000.0 {
 			continue
@@ -859,7 +1013,6 @@ func runRepeatingLoopSearch(
 			distToAnchor, _, _ = dijkstraDistances(g, anchor)
 		}
 
-		// Harvest qualifying high-vert loops anchored at `anchor`
 		var qualLoops []*candidateRoute
 		collectLoop := func(c *candidateRoute) {
 			if c != nil && c.gain >= minLoopGainM && c.length >= minSingleLap && c.length <= maxSingleLap {
@@ -876,7 +1029,6 @@ func runRepeatingLoopSearch(
 			continue
 		}
 
-		// Keep top 8 highest-gain-per-km distinct loops at this anchor
 		sort.Slice(qualLoops, func(i, j int) bool {
 			return (qualLoops[i].gain / qualLoops[i].length) > (qualLoops[j].gain / qualLoops[j].length)
 		})
@@ -884,7 +1036,6 @@ func runRepeatingLoopSearch(
 			qualLoops = qualLoops[:8]
 		}
 
-		// Build stem paths if anchor != StartNode
 		var stemOut, stemBack []RouteStep
 		if anchor != g.StartNode {
 			var ok bool
@@ -892,7 +1043,6 @@ func runRepeatingLoopSearch(
 			if !ok {
 				continue
 			}
-			// Try to find a disjoint return path to minimize stem overlap
 			avoid := make(map[int]bool, len(stemOut))
 			for _, st := range stemOut {
 				avoid[st.EdgeID] = true
@@ -912,14 +1062,12 @@ func runRepeatingLoopSearch(
 		}
 
 		for _, lp := range qualLoops {
-			// Try k = 2, 3, 4, ... laps
 			for k := 2; k <= 8; k++ {
 				totalLen := stemLen + float64(k)*lp.length
 				if totalLen > maxDistM {
 					break
 				}
 				if totalLen >= minDistM && totalLen <= maxDistM {
-					// Compose stemOut + k*lp + stemBack
 					steps := make([]RouteStep, 0, len(stemOut)+k*len(lp.steps)+len(stemBack))
 					steps = append(steps, stemOut...)
 					for lap := 0; lap < k; lap++ {
@@ -927,7 +1075,6 @@ func runRepeatingLoopSearch(
 					}
 					steps = append(steps, stemBack...)
 
-					// Edges in the qualifying high-vert loop are allowed up to k traversals
 					exempt := make(map[int]int, len(lp.edgeSet))
 					for _, st := range lp.steps {
 						exempt[st.EdgeID] += k
@@ -944,7 +1091,7 @@ func runRepeatingLoopSearch(
 	}
 }
 
-func pickWeightedChoice(_ float64, n int, weightFn func(int) float64, rng *rand.Rand) int {
+func pickWeightedChoice(n int, weightFn func(int) float64, rng *rand.Rand) int {
 	total := 0.0
 	weights := make([]float64, n)
 	for i := 0; i < n; i++ {
@@ -1024,7 +1171,6 @@ func selectDiverseTopRoutes(candidates []*candidateRoute, maxResults int) []sele
 		return maxSim
 	}
 
-	// 1. Always pick the #1 highest-elevation route
 	picked = append(picked, selectedRoute{
 		cand:      candidates[0],
 		label:     "Top Vert",
@@ -1032,7 +1178,6 @@ func selectDiverseTopRoutes(candidates []*candidateRoute, maxResults int) []sele
 	})
 	usedIdx[0] = true
 
-	// 2. Pick at least 2 more mostly-distinct routes (so >= 3 mostly distinct overall)
 	distinctTarget := 3
 	if maxResults < distinctTarget {
 		distinctTarget = maxResults
@@ -1054,7 +1199,7 @@ func selectDiverseTopRoutes(candidates []*candidateRoute, maxResults int) []sele
 				picked = append(picked, selectedRoute{
 					cand:      c,
 					label:     label,
-					maxSimPct: math.Round(sim * 1000) / 10,
+					maxSimPct: math.Round(sim*1000) / 10,
 				})
 				usedIdx[i] = true
 			}
@@ -1064,7 +1209,6 @@ func selectDiverseTopRoutes(candidates []*candidateRoute, maxResults int) []sele
 		}
 	}
 
-	// 3. Fill remaining slots up to maxResults with best remaining non-clone routes (< 88% similar)
 	for _, thresh := range []float64{0.85, 0.95} {
 		for i, c := range candidates {
 			if len(picked) >= maxResults {
@@ -1082,7 +1226,7 @@ func selectDiverseTopRoutes(candidates []*candidateRoute, maxResults int) []sele
 				picked = append(picked, selectedRoute{
 					cand:      c,
 					label:     label,
-					maxSimPct: math.Round(sim * 1000) / 10,
+					maxSimPct: math.Round(sim*1000) / 10,
 				})
 				usedIdx[i] = true
 			}
@@ -1092,7 +1236,6 @@ func selectDiverseTopRoutes(candidates []*candidateRoute, maxResults int) []sele
 		}
 	}
 
-	// Re-sort final results by elevation gain descending while preserving badges
 	sort.Slice(picked, func(i, j int) bool {
 		return picked[i].cand.gain > picked[j].cand.gain
 	})
@@ -1103,32 +1246,43 @@ func selectDiverseTopRoutes(candidates []*candidateRoute, maxResults int) []sele
 	return picked
 }
 
-// buildRouteResult expands a candidateRoute's edge steps into full coordinates, elevation profile, and summary metrics.
+// buildRouteResult expands a candidateRoute's edge steps into continuous coordinates, elevation profile, and summary metrics.
 func buildRouteResult(g *TrailGraph, c *candidateRoute, rank int, distinctLabel string, maxSimPct float64) RouteResult {
 	var fullPts [][3]float64
+	// Anchor absolute elevation at StartNode's reference altitude and accumulate continuous relative deltas
+	curEle := g.Nodes[g.StartNode].Ele
+
 	for _, st := range c.steps {
 		e := &g.Edges[st.EdgeID]
 		nPts := len(e.Points)
+		if nPts < 2 {
+			continue
+		}
 		if st.Forward {
+			base := e.Points[0][2]
 			startIdx := 0
 			if len(fullPts) > 0 {
-				startIdx = 1 // avoid duplicating junction vertex
+				startIdx = 1
 			}
 			for i := startIdx; i < nPts; i++ {
-				fullPts = append(fullPts, e.Points[i])
+				pt := e.Points[i]
+				fullPts = append(fullPts, [3]float64{pt[0], pt[1], curEle + (pt[2] - base)})
 			}
+			curEle += e.NetDeltaUV
 		} else {
+			base := e.Points[nPts-1][2]
 			startIdx := nPts - 1
 			if len(fullPts) > 0 {
 				startIdx = nPts - 2
 			}
 			for i := startIdx; i >= 0; i-- {
-				fullPts = append(fullPts, e.Points[i])
+				pt := e.Points[i]
+				fullPts = append(fullPts, [3]float64{pt[0], pt[1], curEle + (pt[2] - base)})
 			}
+			curEle -= e.NetDeltaUV
 		}
 	}
 
-	// Build cumulative distance and elevation profile
 	cumDist := make([]float64, len(fullPts))
 	rawEle := make([]float64, len(fullPts))
 	for i, pt := range fullPts {
@@ -1139,7 +1293,6 @@ func buildRouteResult(g *TrailGraph, c *candidateRoute, rank int, distinctLabel 
 		}
 	}
 
-	// Downsample coordinates for crisp map rendering (up to 600 pts)
 	maxMapPts := 600
 	coords := make([][2]float64, 0, minInt(len(fullPts), maxMapPts))
 	if len(fullPts) <= maxMapPts {
@@ -1153,7 +1306,6 @@ func buildRouteResult(g *TrailGraph, c *candidateRoute, rank int, distinctLabel 
 		}
 	}
 
-	// Downsample elevation profile for Chart.js (up to 200 pts)
 	maxProfPts := 200
 	profDist := make([]float64, 0, minInt(len(fullPts), maxProfPts))
 	profEle := make([]float64, 0, minInt(len(fullPts), maxProfPts))
