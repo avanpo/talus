@@ -530,3 +530,59 @@ func TestRouteBuilderStartEndAndSummitSeeking(t *testing.T) {
 		}
 	}
 }
+
+func TestRouteBuilderMultiClimbLoop(t *testing.T) {
+	dir := t.TempDir()
+	lat0, lon0 := 49.79939, -119.49437
+	proj := newLocalProj(lat0, lon0)
+	toLL := func(x, y, ele float64) [3]float64 {
+		lat, lon := proj.toLatLon(x, y)
+		return [3]float64{lat, lon, ele}
+	}
+
+	// ~21.6km multi-climb loop with 530m relief (430m..960m) but TWO big climbs totaling ~1,010m gain!
+	multiClimb := [][3]float64{
+		toLL(0, 0, 430),
+		toLL(3100, 1500, 700),
+		toLL(6200, 2750, 960),  // Climb 1: +530m
+		toLL(9000, 1000, 480),  // Descent into valley: -480m
+		toLL(7750, -1900, 960), // Climb 2: +480m (total ~1010m gain!)
+		toLL(4000, -2250, 680),
+		toLL(0, 0, 430),
+	}
+	writeSyntheticActivity(t, dir, 6001, "Standard Multi-Climb 1", multiClimb)
+	writeSyntheticActivity(t, dir, 6002, "Standard Multi-Climb 2", multiClimb)
+
+	req := RouteBuildRequest{
+		StartLat:         lat0,
+		StartLon:         lon0,
+		TargetDistanceKm: 22.0,
+		ToleranceKm:      2.5,
+		MaxOverlapPct:    5.0,
+		MinRuns:          2,
+		TimeoutSec:       4,
+		MaxResults:       5,
+	}
+	if err := req.Normalize(); err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+
+	g, err := BuildTrailGraph(context.Background(), dir, req, nil)
+	if err != nil {
+		t.Fatalf("BuildTrailGraph: %v", err)
+	}
+	if len(g.HistoricalLoops) == 0 {
+		t.Errorf("expected historical multi-climb loop to be projected onto TrailGraph")
+	}
+
+	out, err := FindTopRoutes(context.Background(), g, req, nil)
+	if err != nil {
+		t.Fatalf("FindTopRoutes: %v", err)
+	}
+	if len(out.Routes) == 0 {
+		t.Fatalf("expected multi-climb route to be found")
+	}
+	if out.Routes[0].ElevationGainM < 880 {
+		t.Errorf("expected ~1010m multi-climb gain, got %.0fm", out.Routes[0].ElevationGainM)
+	}
+}

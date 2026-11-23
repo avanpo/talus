@@ -336,8 +336,8 @@ func evalLoopCandidate(g *TrailGraph, steps []RouteStep, repeatInfo *RepeatLoopI
 		}
 	}
 
-	// Compute clean elevation gain/loss along the continuous loop profile with 1.5m hysteresis
-	gain, loss := computeDirectionalGain(relAlts, 1.5)
+	// Compute clean elevation gain/loss along the continuous loop profile with 1.0m hysteresis
+	gain, loss := computeDirectionalGain(relAlts, 1.0)
 
 	return &candidateRoute{
 		steps:      steps,
@@ -442,14 +442,25 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 	}
 
 	var wg sync.WaitGroup
-	mainBudget := timeout
+	// Split time budget: ~70% exploration (historical + summit + meet-in-middle + guided walks),
+	// ~15-20% local search detour optimization, and ~15-20% repeating loops if enabled.
+	mainBudget := (timeout * 75) / 100
 	if req.AllowRepeatLoops {
-		mainBudget = (timeout * 3) / 4
+		mainBudget = (timeout * 60) / 100
+	}
+	if mainBudget < time.Second {
+		mainBudget = timeout
 	}
 	mainCtx, mainCancel := context.WithTimeout(searchCtx, mainBudget)
 	defer mainCancel()
 
-	// Phase 0: Targeted Summit-Seeking Disjoint Loops (finds big climbs even across flat approaches!)
+	// Phase 0a: Seed from historical home-start loops projected onto the cleaned trail graph
+	for _, hSteps := range g.HistoricalLoops {
+		addCandidate(evalLoopCandidate(g, hSteps, nil, nil))
+		addCandidate(evalLoopCandidate(g, reverseSteps(hSteps), nil, nil))
+	}
+
+	// Phase 0b: Targeted Summit-Seeking Disjoint Loops (finds big climbs even across flat approaches!)
 	runSummitSeekingLoops(mainCtx, g, distToStart, minDistM, maxDistM, maxOverlapFrac, addCandidate)
 
 	for w := 0; w < workers; w++ {
@@ -483,7 +494,21 @@ func FindTopRoutes(ctx context.Context, g *TrailGraph, req RouteBuildRequest, pr
 	}
 	wg.Wait()
 
-	// Phase C: Repeating high-elevation loops (when enabled)
+	// Phase C: Subpath Detour-Insertion Local Search — splice higher-vert climbing detours into top loops
+	if len(allCandidates) > 0 && searchCtx.Err() == nil {
+		localBudget := (timeout * 20) / 100
+		if localBudget < 500*time.Millisecond {
+			localBudget = 500 * time.Millisecond
+		}
+		localCtx, localCancel := context.WithTimeout(searchCtx, localBudget)
+		if progressFn != nil {
+			progressFn(fmt.Sprintf("Optimizing top routes with climbing detours (%d candidates so far)...", len(allCandidates)))
+		}
+		improveCandidatesWithLocalSearch(localCtx, g, allCandidates, minDistM, maxDistM, maxOverlapFrac, addCandidate)
+		localCancel()
+	}
+
+	// Phase D: Repeating high-elevation loops (when enabled)
 	if req.AllowRepeatLoops && searchCtx.Err() == nil {
 		if progressFn != nil {
 			progressFn(fmt.Sprintf("Exploring repeating loops with >= %.0fm elevation gain...", req.MinLoopGainM))
@@ -789,14 +814,10 @@ func runMeetInTheMiddleBatch(
 					}
 				}
 
-				// Elevation gain score (capped gain rate so no single steep glitch dominates)
-				fwdGain := e.GainFrom(u)
-				revGain := e.GainFrom(v)
-				gainRate := math.Min(0.35, (fwdGain+0.5*revGain)/math.Max(e.Length, 30.0))
-				score := 1.0 + gainRate*35.0
-				if g.Nodes[v].Ele > g.Nodes[u].Ele {
-					score *= 1.25
-				}
+				// Total verticality score: on a closed loop, Total Gain = 0.5 * sum(GainUV + GainVU),
+				// so steep descents into valleys are just as valuable as steep climbs up ridges!
+				vertRate := math.Min(0.40, (e.GainUV+e.GainVU)/math.Max(e.Length, 30.0))
+				score := 1.0 + vertRate*55.0
 				if corridorHits > 0 {
 					score /= (1.0 + float64(corridorHits)*2.5)
 				}
@@ -1073,8 +1094,9 @@ func runGuidedWalkBatch(
 					continue
 				}
 
-				gainRate := math.Min(0.35, e.GainFrom(u)/math.Max(e.Length, 30.0))
-				score := 1.0 + gainRate*35.0
+				// Total verticality score: steep descents and climbs both contribute equally to closed-loop gain
+				vertRate := math.Min(0.40, (e.GainUV+e.GainVU)/math.Max(e.Length, 30.0))
+				score := 1.0 + vertRate*55.0
 
 				if ovAdd > 0 {
 					score *= 0.08
@@ -1139,6 +1161,208 @@ func runGuidedWalkBatch(
 			visited[u] = true
 		}
 	}
+}
+
+// improveCandidatesWithLocalSearch applies subpath detour-insertion hill-climbing to the top
+// diverse candidates, replacing flatter subpaths A -> ... -> B with steeper non-overlapping
+// climbing detours that stay within [minDistM, maxDistM] and <= maxOverlapFrac.
+func improveCandidatesWithLocalSearch(
+	ctx context.Context,
+	g *TrailGraph,
+	candidates []*candidateRoute,
+	minDistM, maxDistM, maxOverlapFrac float64,
+	emit func(*candidateRoute),
+) {
+	seeds := selectDiverseTopRoutes(candidates, 15)
+	if len(seeds) == 0 {
+		return
+	}
+	rng := rand.New(rand.NewSource(time.Now().UnixNano() + 55117))
+
+	for _, s := range seeds {
+		if ctx.Err() != nil {
+			return
+		}
+		cur := s.cand
+		if cur == nil || len(cur.steps) < 3 {
+			continue
+		}
+
+		for iter := 0; iter < 25; iter++ {
+			if ctx.Err() != nil {
+				return
+			}
+			nSteps := len(cur.steps)
+			if nSteps < 3 {
+				break
+			}
+			// Pick a subpath window [i, j) of 1..min(7, nSteps-1) edges
+			maxWin := 7
+			if nSteps-1 < maxWin {
+				maxWin = nSteps - 1
+			}
+			win := 1 + rng.Intn(maxWin)
+			i := rng.Intn(nSteps - win + 1)
+			j := i + win
+
+			nodeA := cur.steps[i].From
+			nodeB := cur.steps[j-1].To
+			if nodeA == nodeB {
+				continue
+			}
+
+			oldSubLen := 0.0
+			oldSubVert := 0.0
+			for k := i; k < j; k++ {
+				e := &g.Edges[cur.steps[k].EdgeID]
+				oldSubLen += e.Length
+				oldSubVert += e.GainUV + e.GainVU
+			}
+
+			keptLen := cur.length - oldSubLen
+			minSubLen := math.Max(50.0, minDistM-keptLen)
+			maxSubLen := maxDistM - keptLen
+			if maxSubLen < minSubLen {
+				continue
+			}
+
+			// Mark edges & intermediate nodes used outside [i, j) as forbidden to keep the detour clean
+			forbEdges := make(map[int]bool, nSteps)
+			forbNodes := make(map[int]bool, nSteps)
+			for k := 0; k < nSteps; k++ {
+				if k >= i && k < j {
+					continue
+				}
+				st := cur.steps[k]
+				forbEdges[st.EdgeID] = true
+				if st.From != nodeA && st.From != nodeB {
+					forbNodes[st.From] = true
+				}
+				if st.To != nodeA && st.To != nodeB {
+					forbNodes[st.To] = true
+				}
+			}
+
+			// Search for a higher-verticality simple detour from nodeA to nodeB
+			bestDetour := findHighVertDetour(g, nodeA, nodeB, minSubLen, maxSubLen, oldSubVert, forbEdges, forbNodes, rng)
+			if len(bestDetour) == 0 {
+				continue
+			}
+
+			newSteps := make([]RouteStep, 0, i+len(bestDetour)+(nSteps-j))
+			newSteps = append(newSteps, cur.steps[:i]...)
+			newSteps = append(newSteps, bestDetour...)
+			newSteps = append(newSteps, cur.steps[j:]...)
+
+			cand := evalLoopCandidate(g, newSteps, cur.repeatInfo, nil)
+			if cand != nil &&
+				cand.length >= minDistM && cand.length <= maxDistM &&
+				cand.overlap/cand.length <= maxOverlapFrac+1e-9 &&
+				cand.gain > cur.gain+2.0 {
+				emit(cand)
+				cur = cand
+			}
+		}
+	}
+}
+
+// findHighVertDetour runs short randomized verticality-biased walks from nodeA to nodeB
+// avoiding forbidden edges/nodes to find a detour with strictly more verticality than oldVert.
+func findHighVertDetour(
+	g *TrailGraph,
+	nodeA, nodeB int,
+	minLen, maxLen, oldVert float64,
+	forbEdges, forbNodes map[int]bool,
+	rng *rand.Rand,
+) []RouteStep {
+	bx, by := g.Nodes[nodeB].X, g.Nodes[nodeB].Y
+	var best []RouteStep
+	bestVert := oldVert
+
+	for trial := 0; trial < 35; trial++ {
+		u := nodeA
+		curLen := 0.0
+		curVert := 0.0
+		lastEdge := -1
+		localNodes := map[int]bool{nodeA: true}
+		localEdges := make(map[int]bool, 16)
+		var steps []RouteStep
+
+		for hop := 0; hop < 18; hop++ {
+			edges := g.Nodes[u].Edges
+			type choice struct {
+				eid   int
+				v     int
+				score float64
+			}
+			var choices []choice
+			for _, eid := range edges {
+				if eid == lastEdge || forbEdges[eid] || localEdges[eid] {
+					continue
+				}
+				e := &g.Edges[eid]
+				v := e.Other(u)
+				if v != nodeB && (forbNodes[v] || localNodes[v]) {
+					continue
+				}
+				if isSharpUTurn(g, u, lastEdge, eid) {
+					continue
+				}
+				newLen := curLen + e.Length
+				if newLen > maxLen {
+					continue
+				}
+				// Euclidean lower-bound pruning to nodeB
+				remDist := math.Hypot(g.Nodes[v].X-bx, g.Nodes[v].Y-by)
+				if newLen+remDist > maxLen {
+					continue
+				}
+				if v == nodeB && newLen < minLen {
+					continue
+				}
+
+				vertRate := math.Min(0.40, (e.GainUV+e.GainVU)/math.Max(e.Length, 30.0))
+				score := 1.0 + vertRate*60.0
+				if v == nodeB && newLen >= minLen {
+					score *= 8.0
+				} else if curLen > maxLen*0.55 {
+					curRem := math.Hypot(g.Nodes[u].X-bx, g.Nodes[u].Y-by)
+					if remDist < curRem {
+						score *= 2.5
+					}
+				}
+				choices = append(choices, choice{eid: eid, v: v, score: score})
+			}
+			if len(choices) == 0 {
+				break
+			}
+			picked := pickWeightedChoice(len(choices), func(i int) float64 { return choices[i].score }, rng)
+			ch := choices[picked]
+			e := &g.Edges[ch.eid]
+			steps = append(steps, RouteStep{
+				EdgeID:  ch.eid,
+				From:    u,
+				To:      ch.v,
+				Forward: e.U == u,
+			})
+			curLen += e.Length
+			curVert += e.GainUV + e.GainVU
+			localEdges[ch.eid] = true
+			lastEdge = ch.eid
+			u = ch.v
+
+			if u == nodeB {
+				if curLen >= minLen && curLen <= maxLen && curVert > bestVert+4.0 {
+					bestVert = curVert
+					best = make([]RouteStep, len(steps))
+					copy(best, steps)
+				}
+				break
+			}
+			localNodes[u] = true
+		}
+	}
+	return best
 }
 
 // runRepeatingLoopSearch discovers high-elevation sub-loops (gain >= minLoopGainM) and composes

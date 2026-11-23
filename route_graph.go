@@ -79,7 +79,7 @@ func (r *RouteBuildRequest) Normalize() error {
 		r.MinLoopGainM = 400.0
 	}
 	if r.SnapRadiusM <= 0 {
-		r.SnapRadiusM = 35.0
+		r.SnapRadiusM = 30.0
 	}
 	if r.SnapRadiusM < 15.0 {
 		r.SnapRadiusM = 15.0
@@ -190,6 +190,7 @@ type TrailGraph struct {
 	SnapDistanceM    float64
 	Nodes            []GraphNode
 	Edges            []GraphEdge
+	HistoricalLoops  [][]RouteStep // historical home-start loops projected onto this graph
 	ActivitiesLoaded int
 	ActivitiesUsed   int
 	BuildDuration    time.Duration
@@ -249,11 +250,12 @@ func (g *TrailGraph) ExportNetworkOverlay(maxEdges int) []NetworkPolyline {
 
 // lightweight struct for fast, low-memory unmarshaling of activity JSON files.
 type routeActivityFile struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	Type        string    `json:"type"`
-	SportType   string    `json:"sport_type"`
-	StartLatLng []float64 `json:"start_latlng"`
+	ID                 int64     `json:"id"`
+	Name               string    `json:"name"`
+	Type               string    `json:"type"`
+	SportType          string    `json:"sport_type"`
+	TotalElevationGain float64   `json:"total_elevation_gain"`
+	StartLatLng        []float64 `json:"start_latlng"`
 	Streams     struct {
 		LatLng struct {
 			Data [][2]float64 `json:"data"`
@@ -350,11 +352,17 @@ type edgeDeltaAccum struct {
 	deltas   []float64 // canonical delta (alt(b) - alt(a)), capped for memory
 }
 
+type historicalLoopTrace struct {
+	gainM float64
+	cells []gridKey
+}
+
 type activityGridExtract struct {
 	actID      int64
 	cells      map[gridKey]cellAccum
-	edgeDeltas map[gridEdgeKey]float64 // canonical delta (b - a)
+	edgeDeltas map[gridEdgeKey]float64 // canonical grade (dEle / dist)
 	edgeHasEle map[gridEdgeKey]bool
+	loopTrace  *historicalLoopTrace // non-nil if activity starts and ends near origin
 }
 
 // graphCache avoids re-parsing 1,100+ JSON files when tweaking route distance/overlap/loop params.
@@ -503,6 +511,7 @@ func BuildTrailGraph(ctx context.Context, dataDir string, req RouteBuildRequest,
 
 	globalCells := make(map[gridKey]*cellAccum, 4096)
 	globalEdges := make(map[gridEdgeKey]*edgeDeltaAccum, 8192)
+	var loopTraces []*historicalLoopTrace
 	activitiesUsed := 0
 
 	for ext := range results {
@@ -510,6 +519,9 @@ func BuildTrailGraph(ctx context.Context, dataDir string, req RouteBuildRequest,
 			return nil, ctx.Err()
 		}
 		activitiesUsed++
+		if ext.loopTrace != nil {
+			loopTraces = append(loopTraces, ext.loopTrace)
+		}
 		for k, acc := range ext.cells {
 			gc := globalCells[k]
 			if gc == nil {
@@ -545,13 +557,21 @@ func BuildTrailGraph(ctx context.Context, dataDir string, req RouteBuildRequest,
 			req.SportFilter, effectiveRadiusM/1000.0, req.StartLat, req.StartLon)
 	}
 
+	// Keep top 50 highest-vert historical home-start loops as seed candidates
+	if len(loopTraces) > 50 {
+		sort.Slice(loopTraces, func(i, j int) bool {
+			return loopTraces[i].gainM > loopTraces[j].gainM
+		})
+		loopTraces = loopTraces[:50]
+	}
+
 	if progressFn != nil {
 		progressFn(fmt.Sprintf("Simplifying trail skeleton from %d nearby activities (min %d runs/segment)...", activitiesUsed, req.MinRuns))
 	}
 
 	// Pass 2: Traffic-ordered spatial merging of fine cells within SnapRadiusM to collapse parallel GPS braids
 	// into a single clean 1-cell-wide trail spine!
-	graph, err := buildCleanTrailGraph(proj, globalCells, globalEdges, req.SnapRadiusM, req.MinRuns)
+	graph, err := buildCleanTrailGraph(proj, globalCells, globalEdges, loopTraces, req.SnapRadiusM, req.MinRuns)
 	if err != nil {
 		return nil, err
 	}
@@ -627,6 +647,15 @@ func parseActivityForGrid(path string, proj localProj, maxRadiusSq, cellSize flo
 		edgeHasEle: make(map[gridEdgeKey]bool, 128),
 	}
 
+	// Check if this activity is a home-start loop (starts & ends within 600m of origin)
+	x0, y0 := proj.toXY(latlng[0][0], latlng[0][1])
+	xEnd, yEnd := proj.toXY(latlng[len(latlng)-1][0], latlng[len(latlng)-1][1])
+	isHomeLoop := (x0*x0+y0*y0 <= 600.0*600.0) && (xEnd*xEnd+yEnd*yEnd <= 600.0*600.0)
+	var traceCells []gridKey
+	if isHomeLoop {
+		traceCells = make([]gridKey, 0, 256)
+	}
+
 	var prevKey gridKey
 	var prevX, prevY, prevAlt float64
 	hasPrev := false
@@ -638,12 +667,16 @@ func parseActivityForGrid(path string, proj localProj, maxRadiusSq, cellSize flo
 		x, y := proj.toXY(pt[0], pt[1])
 		if x*x+y*y > maxRadiusSq {
 			hasPrev = false
+			isHomeLoop = false
 			continue
 		}
 
 		gk := gridKey{
 			gx: int32(math.Floor(x / cellSize)),
 			gy: int32(math.Floor(y / cellSize)),
+		}
+		if isHomeLoop && (len(traceCells) == 0 || traceCells[len(traceCells)-1] != gk) {
+			traceCells = append(traceCells, gk)
 		}
 
 		acc := ext.cells[gk]
@@ -688,6 +721,16 @@ func parseActivityForGrid(path string, proj localProj, maxRadiusSq, cellSize flo
 
 	if len(ext.edgeDeltas) == 0 {
 		return nil
+	}
+	if isHomeLoop && len(traceCells) >= 10 {
+		gain := act.TotalElevationGain
+		if gain <= 0 && hasAlt {
+			gain, _ = computeDirectionalGain(smoothAlts, 1.5)
+		}
+		ext.loopTrace = &historicalLoopTrace{
+			gainM: gain,
+			cells: traceCells,
+		}
 	}
 	return ext
 }
@@ -769,6 +812,7 @@ func buildCleanTrailGraph(
 	proj localProj,
 	globalCells map[gridKey]*cellAccum,
 	globalEdges map[gridEdgeKey]*edgeDeltaAccum,
+	loopTraces []*historicalLoopTrace,
 	snapRadiusM float64,
 	minRuns int,
 ) (*TrailGraph, error) {
@@ -1198,8 +1242,8 @@ func buildCleanTrailGraph(
 			minRC = minRuns
 		}
 
-		// Compute directional elevation gain with a 1.5m hysteresis threshold (data is already 5-pt smoothed + median filtered)
-		gainUV, gainVU := computeDirectionalGain(relAlts, 1.5)
+		// Compute directional elevation gain with a 1.0m hysteresis threshold (data is already 5-pt smoothed + median filtered)
+		gainUV, gainVU := computeDirectionalGain(relAlts, 1.0)
 
 		// Compute unit leaving/arriving direction vectors for anti-U-turn filtering
 		startDirX, startDirY := computeChainDir(sNodes, chain, true)
@@ -1243,14 +1287,152 @@ func buildCleanTrailGraph(
 		}
 	}
 
-	return &TrailGraph{
+	g := &TrailGraph{
 		OriginLat:     proj.lat0,
 		OriginLon:     proj.lon0,
 		StartNode:     startNodeID,
 		SnapDistanceM: snapDistM,
 		Nodes:         nodes,
 		Edges:         edges,
-	}, nil
+	}
+
+	// Project historical home-start loop traces onto the simplified TrailGraph so proven high-vert
+	// loops are automatically included as seed candidates for the solver and local search.
+	if len(loopTraces) > 0 {
+		g.HistoricalLoops = projectHistoricalLoops(g, loopTraces, cellToSuper, superToNode)
+	}
+
+	return g, nil
+}
+
+// projectHistoricalLoops maps historical fine-cell loop traces onto valid sequences of GraphEdges
+// starting and ending at g.StartNode.
+func projectHistoricalLoops(
+	g *TrailGraph,
+	traces []*historicalLoopTrace,
+	cellToSuper map[gridKey]int,
+	superToNode map[int]int,
+) [][]RouteStep {
+	// Quick lookup for direct edge between two junction nodes (picking shortest if multigraph)
+	directEdge := func(u, v int) (RouteStep, bool) {
+		bestID := -1
+		bestLen := math.Inf(1)
+		for _, eid := range g.Nodes[u].Edges {
+			e := &g.Edges[eid]
+			if e.Other(u) == v && e.Length < bestLen {
+				bestLen = e.Length
+				bestID = eid
+			}
+		}
+		if bestID < 0 {
+			return RouteStep{}, false
+		}
+		e := &g.Edges[bestID]
+		return RouteStep{EdgeID: bestID, From: u, To: v, Forward: e.U == u}, true
+	}
+
+	var projected [][]RouteStep
+	for _, tr := range traces {
+		// Extract ordered sequence of visited junction node IDs
+		jSeq := []int{g.StartNode}
+		for _, ck := range tr.cells {
+			sid, ok := cellToSuper[ck]
+			if !ok {
+				continue
+			}
+			nid, ok := superToNode[sid]
+			if !ok {
+				continue
+			}
+			if jSeq[len(jSeq)-1] != nid {
+				jSeq = append(jSeq, nid)
+			}
+		}
+		if jSeq[len(jSeq)-1] != g.StartNode {
+			jSeq = append(jSeq, g.StartNode)
+		}
+		// Special case: a pure loop with no intermediate junctions contracts to a single self-loop edge on StartNode
+		if len(jSeq) <= 2 {
+			for _, eid := range g.Nodes[g.StartNode].Edges {
+				e := &g.Edges[eid]
+				if e.U == g.StartNode && e.V == g.StartNode {
+					projected = append(projected, []RouteStep{{
+						EdgeID:  eid,
+						From:    g.StartNode,
+						To:      g.StartNode,
+						Forward: true,
+					}})
+				}
+			}
+			continue
+		}
+
+		// Connect consecutive junctions in jSeq via direct edges (or short <= 4-hop BFS bridge)
+		var steps []RouteStep
+		valid := true
+		for i := 0; i < len(jSeq)-1; i++ {
+			u, v := jSeq[i], jSeq[i+1]
+			if u == v {
+				continue
+			}
+			if st, ok := directEdge(u, v); ok {
+				steps = append(steps, st)
+				continue
+			}
+			// Short BFS bridge (up to 4 hops) in case a junction was slightly missed by GPS jitter
+			bridge, ok := shortNodeBridge(g, u, v, 4)
+			if !ok {
+				valid = false
+				break
+			}
+			steps = append(steps, bridge...)
+		}
+		if valid && len(steps) >= 2 && steps[0].From == g.StartNode && steps[len(steps)-1].To == g.StartNode {
+			projected = append(projected, steps)
+		}
+	}
+	return projected
+}
+
+func shortNodeBridge(g *TrailGraph, src, dst, maxHops int) ([]RouteStep, bool) {
+	type qItem struct {
+		node int
+		hops int
+	}
+	parentNode := map[int]int{src: -1}
+	parentEdge := map[int]int{src: -1}
+	q := []qItem{{node: src, hops: 0}}
+	for len(q) > 0 {
+		cur := q[0]
+		q = q[1:]
+		if cur.node == dst {
+			var rev []RouteStep
+			c := dst
+			for c != src {
+				p := parentNode[c]
+				eid := parentEdge[c]
+				e := &g.Edges[eid]
+				rev = append(rev, RouteStep{EdgeID: eid, From: p, To: c, Forward: e.U == p})
+				c = p
+			}
+			for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
+				rev[i], rev[j] = rev[j], rev[i]
+			}
+			return rev, true
+		}
+		if cur.hops >= maxHops {
+			continue
+		}
+		for _, eid := range g.Nodes[cur.node].Edges {
+			nb := g.Edges[eid].Other(cur.node)
+			if _, seen := parentNode[nb]; !seen {
+				parentNode[nb] = cur.node
+				parentEdge[nb] = eid
+				q = append(q, qItem{node: nb, hops: cur.hops + 1})
+			}
+		}
+	}
+	return nil, false
 }
 
 // computeChainDir computes a smoothed unit direction vector near the start (fromStart=true)

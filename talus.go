@@ -279,7 +279,7 @@ func runRouteCommand(rawArgs []string) {
 	sport := routeCmd.String("sport", "run", "Sport filter: 'run', 'foot' (run+hike+walk), or 'all'")
 	allowRepeat := routeCmd.Bool("allow-repeat-loops", false, "Allow repeating a sub-loop that meets --min-loop-gain")
 	minLoopGain := routeCmd.Float64("min-loop-gain", 400.0, "Minimum elevation gain (m) for a repeatable sub-loop")
-	snapRadius := routeCmd.Float64("snap-radius", 35.0, "GPS trace snapping radius in meters")
+	snapRadius := routeCmd.Float64("snap-radius", 30.0, "GPS trace snapping radius in meters")
 	timeoutSec := routeCmd.Int("timeout", 15, "Search time budget in seconds")
 	maxResults := routeCmd.Int("top", 5, "Number of top route options to output")
 	maxCPUs := routeCmd.Int("max-cpus", 0, "Max CPU cores to use (default: 25% of host cores, min 1)")
